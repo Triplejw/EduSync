@@ -1,21 +1,39 @@
 import os
+import time
 from llama_cpp import Llama
 
 # 1. Setup Model Path
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 MODEL_PATH = os.path.join(BASE_DIR, "models", "Meta-Llama-3-8B-Instruct-Q4_K_M.gguf")
 
+# Model load time (ms) for research metrics; set when model loads
+model_load_time_ms = None
+
+def get_model_load_time_ms():
+    """Return model load time in ms if available (for research report)."""
+    return model_load_time_ms
+
 print(f"Loading LLM from: {MODEL_PATH}")
 
-# 2. Initialize Model (Global Variable)
+# 2. Initialize Model (Global Variable) - Optimized for Edge Performance
 try:
+    _start = time.perf_counter()
     llm = Llama(
         model_path=MODEL_PATH,
-        n_gpu_layers=-1, 
-        n_ctx=4096,
-        verbose=True 
+        n_gpu_layers=-1,      # All layers on GPU
+        n_ctx=4096,           # Context window
+        n_threads=6,          # CPU threads for non-GPU operations
+        n_batch=512,          # Batch size for faster prompt processing
+        verbose=False         # Disable verbose logging for performance
     )
-    print("✅ Llama-3 Loaded on GPU")
+    model_load_time_ms = (time.perf_counter() - _start) * 1000
+    print(f"✅ Llama-3 Loaded on GPU (Optimized: n_threads=6, n_batch=512) in {model_load_time_ms:.0f} ms")
+    # Log for research paper (System Resource Utilization)
+    try:
+        from metrics_logger import log_system_metrics
+        log_system_metrics(event="model_load", model_load_time_ms=model_load_time_ms)
+    except Exception:
+        pass
 except Exception as e:
     print(f"❌ Failed to load LLM: {e}")
     llm = None
@@ -57,7 +75,7 @@ Context: {content_text}
     output = llm(
         prompt,
         max_tokens=512,
-        temperature=0.7,
+        temperature=0.4,  # Reduced for more deterministic JSON output
         stop=["<|eot_id|>"],
         echo=False
     )
@@ -105,5 +123,5 @@ Do not include any text outside the JSON.
 Context: {content_text}
 <|eot_id|><|start_header_id|>assistant<|end_header_id|>"""
 
-    output = llm(prompt, max_tokens=512, temperature=0.6, stop=["<|eot_id|>"], echo=False)
+    output = llm(prompt, max_tokens=512, temperature=0.4, stop=["<|eot_id|>"], echo=False)  # Reduced for deterministic JSON
     return output['choices'][0]['text']

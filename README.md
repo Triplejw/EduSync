@@ -2,6 +2,14 @@
 
 EduSync is a Learning Management System with an AI pipeline that generates quizzes, summaries, and flashcards from study materials. Teachers can upload materials, create assignments, and monitor student progress. Students can study with AI-generated summaries and flashcards, and take quizzes.
 
+## ECE Final Year Project (12 Credits)
+
+This project serves as a 12-credit BTech ECE final year project. It includes:
+
+- **DSP-based engagement detection:** Scroll behavior is sampled at 1 Hz and processed using FIR low-pass filtering, signal energy, zero-crossing rate (ZCR), and FFT-based spectral analysis to compute an engagement score (see `backend/signal_processor.py`).
+- **Research data:** Inference and engagement metrics are logged to `backend/research_data/` (JSONL). Use `GET /research/metrics-summary` for aggregated stats.
+- **Project report:** Full abstract, system architecture, methodology, and results template are in [docs/PROJECT_REPORT.md](docs/PROJECT_REPORT.md).
+
 ## Features
 
 - **Teacher Dashboard**
@@ -50,10 +58,11 @@ EduSync/
    python download_models.py  # if needed
    ```
 
-3. Start the server:
+3. Start the server (bind to all interfaces so mobile devices can reach it):
    ```bash
    uvicorn main:app --reload --host 0.0.0.0 --port 8000
    ```
+   Use `--host 0.0.0.0` so the edge node accepts connections from your phone (Ethernet/Wi-Fi).
 
 ### Frontend
 
@@ -66,7 +75,7 @@ EduSync/
 2. Configure API URL in `EduSyncApp/lib/config.ts`:
    - For web: `localhost` works
    - For Android emulator: `10.0.2.2` (default)
-   - For physical device: your computer's IP (e.g. `192.168.1.100`)
+   - For physical device on same network: your computer's IP (e.g. `10.222.250.96` when using Ethernet)
 
 3. Start the app:
    ```bash
@@ -77,8 +86,10 @@ EduSync/
 
 | Endpoint | Method | Description |
 |----------|--------|-------------|
-| `/login` | POST | Login |
-| `/register` | POST | Register (teacher/student) |
+| `/` | GET | Health (no auth) |
+| `/health` | GET | Light health check (no auth) |
+| `/login` | POST | Login (returns JWT) |
+| `/register` | POST | Register teacher/student (returns JWT) |
 | `/extract-text` | POST | OCR from file |
 | `/generate-quiz` | POST | AI quiz from text |
 | `/generate-summary` | POST | AI summary from text |
@@ -88,7 +99,10 @@ EduSync/
 | `/materials` | GET/POST | List/create materials |
 | `/assignments` | GET/POST | List/create assignments |
 | `/assignments/{id}/submit` | POST | Submit quiz |
+| `/submit-analytics` | POST | Submit scroll signal, get engagement score |
+| `/teacher/dashboard-stats` | GET | Aggregate engagement and quiz stats (teacher) |
+| `/research/metrics-summary` | GET | Aggregated inference and engagement metrics (for report) |
 
 ## Auth
 
-The app uses simple token-based auth. On login/register, the backend returns `user_id`. The frontend sends `X-User-Id` header with API requests. For production, replace with JWT.
+The app uses **JWT (JSON Web Tokens)**. On login/register, the backend returns `access_token` and `user`. The mobile client stores the token and sends `Authorization: Bearer <access_token>` on every request. Set `EDUSYNC_JWT_SECRET` in the environment for production.

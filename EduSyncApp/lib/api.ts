@@ -7,12 +7,12 @@ export const api = axios.create({
   timeout: 15000, // 15s - fail fast if backend unreachable
 });
 
-export function setAuthHeader(userId: number) {
-  api.defaults.headers.common['X-User-Id'] = String(userId);
+export function setAuthHeader(accessToken: string) {
+  api.defaults.headers.common['Authorization'] = `Bearer ${accessToken}`;
 }
 
 export function clearAuthHeader() {
-  delete api.defaults.headers.common['X-User-Id'];
+  delete api.defaults.headers.common['Authorization'];
 }
 
 // Auth
@@ -80,6 +80,23 @@ export async function createMaterial(payload: {
   return data;
 }
 
+/** Upload file, run OCR+AI, create material in one call (longer timeout for AI processing) */
+export async function uploadMaterial(
+  file: { uri: string; name: string; type?: string },
+  title?: string,
+  classroomId?: number
+) {
+  const formData = new FormData();
+  formData.append('file', file as any);
+  if (title) formData.append('title', title);
+  if (classroomId) formData.append('classroom_id', String(classroomId));
+  const { data } = await api.post('/upload-material', formData, {
+    headers: { 'Content-Type': 'multipart/form-data' },
+    timeout: 300000, // 5 minutes for OCR + 3 LLM calls (summary, flashcards, quiz)
+  });
+  return data;
+}
+
 export async function listMaterials(classroom_id?: number) {
   const url = classroom_id ? `/materials?classroom_id=${classroom_id}` : '/materials';
   const { data } = await api.get(url);
@@ -124,7 +141,37 @@ export async function getClassroomProgress(classroom_id: number) {
   return data;
 }
 
+/** Per-student DSP metrics (ZCR, energy, reading_ratio) for ECE demo */
+export async function getClassroomDspMetrics(classroom_id: number) {
+  const { data } = await api.get(`/progress/classroom/${classroom_id}/dsp-metrics`);
+  return data;
+}
+
 export async function getAssignmentSubmissions(assignment_id: number) {
   const { data } = await api.get(`/progress/submissions/${assignment_id}`);
+  return data;
+}
+
+/** Light health check to detect backend unreachable vs auth failure */
+export async function checkBackendHealth(): Promise<boolean> {
+  try {
+    const { status } = await api.get('/', { timeout: 5000 });
+    return status === 200;
+  } catch {
+    return false;
+  }
+}
+
+// Analytics
+export async function submitAnalytics(materialId: number, scrollSignal: number[]) {
+  const { data } = await api.post('/submit-analytics', {
+    material_id: materialId,
+    scroll_signal: scrollSignal,
+  });
+  return data;
+}
+
+export async function getTeacherDashboardStats() {
+  const { data } = await api.get('/teacher/dashboard-stats');
   return data;
 }
