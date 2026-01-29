@@ -1,6 +1,18 @@
-# Welcome to your Expo app 👋
+# EduSync App - AI-Powered LMS
 
-This is an [Expo](https://expo.dev) project created with [`create-expo-app`](https://www.npmjs.com/package/create-expo-app).
+Expo/React Native frontend for EduSync LMS.
+
+## EduSync Setup
+
+1. **Configure API URL** in `lib/config.ts`:
+   - Web: `localhost` (default)
+   - Android emulator: `10.0.2.2` (default)
+   - Physical device: Set `BACKEND_IP` to your computer's IP
+
+2. **Start the backend** (from project root):
+   ```bash
+   cd backend && uvicorn main:app --reload --host 0.0.0.0 --port 8000
+   ```
 
 ## Get started
 

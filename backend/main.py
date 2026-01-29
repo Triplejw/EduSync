@@ -212,6 +212,17 @@ def create_material(req: MaterialCreate, db: Session = Depends(get_db), user: Us
 @app.get("/materials", dependencies=[Depends(get_current_user)])
 def list_materials(classroom_id: Optional[int] = None, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
     q = db.query(Material)
+    if user.role == "teacher":
+        # Teachers see materials from their classrooms or unassigned materials
+        teacher_room_ids = [r.id for r in db.query(Classroom).filter(Classroom.teacher_id == user.id).all()]
+        q = q.filter(
+            (Material.classroom_id.in_(teacher_room_ids)) | (Material.classroom_id.is_(None))
+        )
+    else:
+        # Students see materials from classrooms they're enrolled in
+        enrollments = db.query(ClassroomEnrollment).filter(ClassroomEnrollment.user_id == user.id).all()
+        room_ids = [e.classroom_id for e in enrollments]
+        q = q.filter(Material.classroom_id.in_(room_ids))
     if classroom_id:
         q = q.filter(Material.classroom_id == classroom_id)
     materials = q.order_by(Material.created_at.desc()).all()
