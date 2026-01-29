@@ -13,7 +13,6 @@ import {
 import { useRouter } from 'expo-router';
 import { useAuth } from '@/context/AuthContext';
 import * as api from '@/lib/api';
-import * as api from '@/lib/api';
 
 export default function ClassroomsScreen() {
   const router = useRouter();
@@ -93,6 +92,12 @@ export default function ClassroomsScreen() {
   const isTeacher = user?.role === 'teacher';
   const { logout } = useAuth();
 
+  const handleSignOut = async () => {
+    // Clear auth and navigate
+    logout();
+    router.replace('/');
+  };
+
   if (loading) {
     return (
       <View style={styles.center}>
@@ -170,7 +175,7 @@ export default function ClassroomsScreen() {
         ))
       )}
 
-      <TouchableOpacity style={styles.signOutBtn} onPress={() => { logout(); router.replace('/'); }}>
+      <TouchableOpacity style={styles.signOutBtn} onPress={handleSignOut}>
         <Text style={styles.signOutText}>Sign Out</Text>
       </TouchableOpacity>
     </ScrollView>

@@ -1,6 +1,5 @@
-import { useEffect } from 'react';
 import { Tabs } from 'expo-router';
-import { useRouter } from 'expo-router';
+import { View, ActivityIndicator } from 'react-native';
 import { IconSymbol } from '@/components/ui/icon-symbol';
 import { useAuth } from '@/context/AuthContext';
 import { Colors } from '@/constants/theme';
@@ -9,13 +8,20 @@ import { useColorScheme } from '@/hooks/use-color-scheme';
 export default function TabLayout() {
   const colorScheme = useColorScheme();
   const { user, loading } = useAuth();
-  const router = useRouter();
 
-  useEffect(() => {
-    if (!loading && !user) {
-      router.replace('/');
-    }
-  }, [user, loading, router]);
+  // Show loading only during initial auth check
+  if (loading) {
+    return (
+      <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: '#fff' }}>
+        <ActivityIndicator size="large" color="#0a7ea4" />
+      </View>
+    );
+  }
+
+  // When user is null (signing out), return null to allow navigation to proceed
+  if (!user) {
+    return null;
+  }
 
   const tint = Colors[colorScheme ?? 'light'].tint;
 
