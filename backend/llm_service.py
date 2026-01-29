@@ -62,3 +62,48 @@ Context: {content_text}
         echo=False
     )
     return output['choices'][0]['text']
+
+
+def generate_summary(content_text):
+    """Generate a concise summary of study material using the LLM."""
+    if not llm:
+        return "Error: AI Model not loaded."
+
+    max_chars = 12000
+    if len(content_text) > max_chars:
+        content_text = content_text[:max_chars] + "... [Text Truncated]"
+
+    prompt = f"""<|start_header_id|>system<|end_header_id|>
+
+You are an educational assistant. Summarize the following study material in 3-5 clear paragraphs. 
+Focus on key concepts, main ideas, and important details. Use simple, clear language.
+<|eot_id|><|start_header_id|>user<|end_header_id|>
+
+{content_text}
+<|eot_id|><|start_header_id|>assistant<|end_header_id|>"""
+
+    output = llm(prompt, max_tokens=512, temperature=0.5, stop=["<|eot_id|>"], echo=False)
+    return output['choices'][0]['text'].strip()
+
+
+def generate_flashcards(content_text):
+    """Generate flashcards (question/answer pairs) as JSON from study material."""
+    if not llm:
+        return "[]"
+
+    max_chars = 12000
+    if len(content_text) > max_chars:
+        content_text = content_text[:max_chars] + "... [Text Truncated]"
+
+    prompt = f"""<|start_header_id|>system<|end_header_id|>
+
+You are a strict JSON generator. Output exactly 5 valid JSON objects in a list.
+Each object must have exactly: "front" (question/term) and "back" (answer/definition).
+Do not include any text outside the JSON.
+<|eot_id|><|start_header_id|>user<|end_header_id|>
+
+Context: {content_text}
+<|eot_id|><|start_header_id|>assistant<|end_header_id|>"""
+
+    output = llm(prompt, max_tokens=512, temperature=0.6, stop=["<|eot_id|>"], echo=False)
+    return output['choices'][0]['text']
