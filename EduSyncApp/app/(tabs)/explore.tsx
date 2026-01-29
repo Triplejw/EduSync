@@ -92,10 +92,10 @@ export default function ClassroomsScreen() {
   const isTeacher = user?.role === 'teacher';
   const { logout } = useAuth();
 
-  const handleSignOut = async () => {
-    // Clear auth and navigate
-    logout();
+  const handleSignOut = () => {
+    // Navigate first, then logout
     router.replace('/');
+    setTimeout(() => logout(), 50);
   };
 
   if (loading) {

@@ -9,18 +9,13 @@ export default function TabLayout() {
   const colorScheme = useColorScheme();
   const { user, loading } = useAuth();
 
-  // Show loading only during initial auth check
-  if (loading) {
+  // Show white screen with spinner during sign out transition (prevents black screen)
+  if (loading || !user) {
     return (
-      <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: '#fff' }}>
+      <View style={{ flex: 1, backgroundColor: '#fff', justifyContent: 'center', alignItems: 'center' }}>
         <ActivityIndicator size="large" color="#0a7ea4" />
       </View>
     );
-  }
-
-  // When user is null (signing out), return null to allow navigation to proceed
-  if (!user) {
-    return null;
   }
 
   const tint = Colors[colorScheme ?? 'light'].tint;
