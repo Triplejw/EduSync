@@ -1,0 +1,19 @@
+# Ignore Python Virtual Env
+venv/
+__pycache__/
+*.pyc
+
+# Ignore Node Modules (Frontend)
+node_modules/
+.expo/
+
+# Ignore Large AI Models (Download them fresh if needed)
+backend/models/*.gguf
+backend/models/*.bin
+
+# Ignore Database (Local only)
+*.db
+*.sqlite
+
+# Ignore System files
+.DS_Store
