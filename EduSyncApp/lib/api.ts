@@ -1,4 +1,5 @@
 import axios from 'axios';
+import * as FileSystem from 'expo-file-system/legacy';
 import { API_URL } from '@/lib/config';
 
 export const api = axios.create({
@@ -7,12 +8,20 @@ export const api = axios.create({
   timeout: 15000, // 15s - fail fast if backend unreachable
 });
 
+let currentAuthToken: string | null = null;
+
 export function setAuthHeader(accessToken: string) {
   api.defaults.headers.common['Authorization'] = `Bearer ${accessToken}`;
+  currentAuthToken = accessToken;
 }
 
 export function clearAuthHeader() {
   delete api.defaults.headers.common['Authorization'];
+  currentAuthToken = null;
+}
+
+export function getAuthToken(): string | null {
+  return currentAuthToken;
 }
 
 // Auth
@@ -52,13 +61,18 @@ export async function generateFlashcards(text: string) {
 }
 
 // Classrooms
-export async function createClassroom(name: string) {
-  const { data } = await api.post('/classrooms', { name });
+export async function createClassroom(name: string, subjectName?: string) {
+  const { data } = await api.post('/classrooms', { name, subject_name: subjectName });
   return data;
 }
 
 export async function listClassrooms() {
   const { data } = await api.get('/classrooms');
+  return data;
+}
+
+export async function getClassroom(id: number) {
+  const { data } = await api.get(`/classrooms/${id}`);
   return data;
 }
 
@@ -92,8 +106,26 @@ export async function uploadMaterial(
   if (classroomId) formData.append('classroom_id', String(classroomId));
   const { data } = await api.post('/upload-material', formData, {
     headers: { 'Content-Type': 'multipart/form-data' },
-    timeout: 300000, // 5 minutes for OCR + 3 LLM calls (summary, flashcards, quiz)
+    timeout: 120000, // 2 minutes for OCR only (AI generation is on-demand now)
   });
+  return data;
+}
+
+/** Generate summary for material on-demand */
+export async function generateMaterialSummary(id: number) {
+  const { data } = await api.post(`/materials/${id}/generate-summary`, {}, { timeout: 120000 });
+  return data;
+}
+
+/** Generate flashcards for material on-demand */
+export async function generateMaterialFlashcards(id: number) {
+  const { data } = await api.post(`/materials/${id}/generate-flashcards`, {}, { timeout: 120000 });
+  return data;
+}
+
+/** Generate quiz for material on-demand */
+export async function generateMaterialQuiz(id: number) {
+  const { data } = await api.post(`/materials/${id}/generate-quiz`, {}, { timeout: 120000 });
   return data;
 }
 
@@ -174,4 +206,47 @@ export async function submitAnalytics(materialId: number, scrollSignal: number[]
 export async function getTeacherDashboardStats() {
   const { data } = await api.get('/teacher/dashboard-stats');
   return data;
+}
+
+/** Convert ArrayBuffer to base64 (chunked for large files). */
+function arrayBufferToBase64(buffer: ArrayBuffer): string {
+  const bytes = new Uint8Array(buffer);
+  const chunk = 8192;
+  let binary = '';
+  for (let i = 0; i < bytes.length; i += chunk) {
+    const sub = bytes.subarray(i, i + chunk);
+    binary += String.fromCharCode.apply(null, [...sub]);
+  }
+  return btoa(binary);
+}
+
+/**
+ * Download a material file with authentication (axios + base64 for reliable auth headers).
+ * Returns the local file URI after downloading to cache.
+ */
+export async function downloadMaterialFile(materialId: number, fileExt: string): Promise<string> {
+  const token = getAuthToken();
+  if (!token) {
+    throw new Error('Not authenticated');
+  }
+
+  const remoteUrl = `${API_URL}/materials/${materialId}/file`;
+  const localUri = `${FileSystem.cacheDirectory}material_${materialId}${fileExt}`;
+
+  const fileInfo = await FileSystem.getInfoAsync(localUri);
+  if (fileInfo.exists) {
+    return localUri;
+  }
+
+  const { data } = await api.get<ArrayBuffer>(remoteUrl, {
+    responseType: 'arraybuffer',
+    timeout: 60000,
+  });
+
+  const base64 = arrayBufferToBase64(data);
+  await FileSystem.writeAsStringAsync(localUri, base64, {
+    encoding: FileSystem.EncodingType.Base64,
+  });
+
+  return localUri;
 }
