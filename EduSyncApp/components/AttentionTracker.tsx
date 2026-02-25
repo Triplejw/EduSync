@@ -1,8 +1,8 @@
 import { useEffect, useRef, useState, useCallback } from 'react';
-import { StyleSheet, View, Text, Animated } from 'react-native';
+import { StyleSheet, View, Text, Animated, Alert, Linking, Platform } from 'react-native';
 import { CameraView, useCameraPermissions } from 'expo-camera';
 import { submitAttention } from '@/lib/api';
-import { useTrackingConsent } from './PrivacyConsent';
+import { PrivacyConsent, useTrackingConsent } from './PrivacyConsent';
 
 const CAPTURE_INTERVAL_MS = 2000; // Every 2 seconds
 
@@ -16,10 +16,10 @@ type AttentionTrackerProps = {
 /**
  * Attention tracking component using camera-based head pose estimation.
  *
- * Features:
- * - Respects user analytics consent (won't track if declined)
+ * - Shows PrivacyConsent modal if user hasn't responded yet
+ * - Requests camera permission with explanation
+ * - Captures front camera every 2s and sends to backend
  * - Optional visual indicator showing attention status
- * - Callback for attention changes
  */
 export function AttentionTracker({
   studentId,
@@ -31,7 +31,8 @@ export function AttentionTracker({
   const [cameraReady, setCameraReady] = useState(false);
   const [attentionScore, setAttentionScore] = useState<number | null>(null);
   const [isAttentive, setIsAttentive] = useState(true);
-  const { hasConsent, loading: consentLoading } = useTrackingConsent();
+  const { hasConsent, loading: consentLoading, refresh: refreshConsent } = useTrackingConsent();
+  const [permissionRequested, setPermissionRequested] = useState(false);
 
   const cameraRef = useRef<CameraView>(null);
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -90,8 +91,56 @@ export function AttentionTracker({
     }
   }, [studentId, assignmentId, onAttentionChange]);
 
+  // Request camera permission once consent is granted
   useEffect(() => {
-    // Don't track if user hasn't consented
+    if (consentLoading || !hasConsent) return;
+    if (!permission) return;
+    if (permission.granted) return; // Already granted
+    if (permissionRequested) return; // Already asked
+
+    setPermissionRequested(true);
+
+    // Show an alert explaining why we need camera before the OS prompt
+    Alert.alert(
+      'Camera Access Needed',
+      'EduSync uses the front camera during quizzes to track attention and help improve your learning experience. No images are stored.',
+      [
+        {
+          text: 'Not Now',
+          style: 'cancel',
+        },
+        {
+          text: 'Allow',
+          onPress: async () => {
+            const result = await requestPermission();
+            if (!result.granted && result.canAskAgain === false) {
+              // Permission permanently denied — guide user to settings
+              Alert.alert(
+                'Camera Permission Required',
+                'Camera access was denied. Please enable it in your device settings to use attention tracking.',
+                [
+                  { text: 'Cancel', style: 'cancel' },
+                  {
+                    text: 'Open Settings',
+                    onPress: () => {
+                      if (Platform.OS === 'ios') {
+                        Linking.openURL('app-settings:');
+                      } else {
+                        Linking.openSettings();
+                      }
+                    },
+                  },
+                ]
+              );
+            }
+          },
+        },
+      ]
+    );
+  }, [consentLoading, hasConsent, permission, permissionRequested, requestPermission]);
+
+  // Start capture interval when everything is ready
+  useEffect(() => {
     if (consentLoading || !hasConsent) return;
     if (!permission?.granted || !cameraReady) return;
 
@@ -104,21 +153,26 @@ export function AttentionTracker({
     };
   }, [permission?.granted, cameraReady, captureAndSend, hasConsent, consentLoading]);
 
-  useEffect(() => {
-    if (!permission) return;
-    if (!permission.granted && hasConsent) {
-      requestPermission();
-    }
-  }, [permission, requestPermission, hasConsent]);
+  // Show PrivacyConsent modal if user hasn't consented yet
+  // This is the actual modal that lets the user accept/decline
+  if (!consentLoading && hasConsent === false) {
+    return (
+      <PrivacyConsent
+        onConsentChange={(granted) => {
+          // Refresh the hook state after the modal is dismissed
+          refreshConsent();
+        }}
+      />
+    );
+  }
 
-  // Don't render anything if no consent
+  // Don't render camera until consent + permission are ready
   if (consentLoading || !hasConsent) return null;
-  if (!permission) return null;
-  if (!permission.granted) return null;
+  if (!permission || !permission.granted) return null;
 
   return (
     <>
-      {/* Hidden camera for capture */}
+      {/* Camera preview — needs reasonable size to capture frames, hidden off-screen */}
       <View style={styles.hiddenCamera} pointerEvents="none">
         <CameraView
           ref={cameraRef}
@@ -149,16 +203,16 @@ export function AttentionTracker({
 const styles = StyleSheet.create({
   hiddenCamera: {
     position: 'absolute',
-    width: 1,
-    height: 1,
+    width: 150,
+    height: 150,
     overflow: 'hidden',
     opacity: 0.01,
-    top: 0,
+    top: -150,
     left: 0,
   },
   camera: {
-    width: 1,
-    height: 1,
+    width: 150,
+    height: 150,
   },
   indicator: {
     position: 'absolute',
