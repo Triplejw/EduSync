@@ -17,3 +17,12 @@ backend/models/*.bin
 
 # Ignore System files
 .DS_Store
+
+# Ignore uploaded files (user-generated content)
+backend/uploads/
+
+# Ignore environment/config with secrets
+backend/config.py
+
+# Ignore Claude Code memory
+.claude/

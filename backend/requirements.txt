@@ -13,3 +13,9 @@ Pillow>=10.0.0
 pdf2image>=1.16.0
 pypdf>=3.0.0
 llama-cpp-python>=0.2.0
+# Research visualization (scripts/visualize_research_data.py)
+matplotlib>=3.7.0
+pandas>=2.0.0
+# Vision-based attention (head pose via MediaPipe)
+mediapipe==0.10.9
+opencv-python>=4.8.0

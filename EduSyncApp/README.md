@@ -1,62 +1,82 @@
-# EduSync App - AI-Powered LMS
+# EduSync — Edge AI Research Platform (Mobile Client)
 
-Expo/React Native frontend for EduSync LMS.
+Expo/React Native frontend for the EduSync research testbed. This app serves as the **signal acquisition and user interaction layer** for validating an Edge AI architecture and DSP-based engagement detection algorithms.
 
-## EduSync Setup
+## Research Role
 
-1. **Configure API URL** in `lib/config.ts`:
-   - Web: `localhost` (default)
-   - Android emulator: `10.0.2.2` (default)
-   - Physical device: Set `BACKEND_IP` to your computer's IP
+- **Signal Acquisition:** The `useScrollTracker` hook samples scroll velocity at 1 Hz, producing the discrete-time signal `x[n]` that feeds the backend DSP pipeline.
+- **Data Collection:** During multi-user sessions, each participant's scroll telemetry and quiz responses are logged for offline Pearson correlation analysis (Experiment B).
+- **Edge Client:** All API calls target the local edge node (`0.0.0.0:8000`) — no cloud services are contacted.
 
-2. **Start the backend** (from project root):
-   ```bash
-   cd backend && uvicorn main:app --reload --host 0.0.0.0 --port 8000
-   ```
+## Quick Setup
 
-## Get started
+### 1. Configure the Backend IP
 
-1. Install dependencies
-
-   ```bash
-   npm install
-   ```
-
-2. Start the app
-
-   ```bash
-   npx expo start
-   ```
-
-In the output, you'll find options to open the app in a
-
-- [development build](https://docs.expo.dev/develop/development-builds/introduction/)
-- [Android emulator](https://docs.expo.dev/workflow/android-studio-emulator/)
-- [iOS simulator](https://docs.expo.dev/workflow/ios-simulator/)
-- [Expo Go](https://expo.dev/go), a limited sandbox for trying out app development with Expo
-
-You can start developing by editing the files inside the **app** directory. This project uses [file-based routing](https://docs.expo.dev/router/introduction).
-
-## Get a fresh project
-
-When you're ready, run:
+Edit `BACKEND_IP` in `lib/config.ts`, or use the env var override:
 
 ```bash
-npm run reset-project
+# Find your LAN IP (from the project root):
+./find_backend_ip.sh
+
+# Option A: env var (no code change)
+EXPO_PUBLIC_API_URL=http://<YOUR_IP>:8000 npx expo start
+
+# Option B: edit lib/config.ts directly
 ```
 
-This command will move the starter code to the **app-example** directory and create a blank **app** directory where you can start developing.
+### 2. Start the Backend
 
-## Learn more
+```bash
+cd backend && python main.py
+# Binds to http://0.0.0.0:8000 (all LAN interfaces)
+```
 
-To learn more about developing your project with Expo, look at the following resources:
+### 3. Install Dependencies and Start
 
-- [Expo documentation](https://docs.expo.dev/): Learn fundamentals, or go into advanced topics with our [guides](https://docs.expo.dev/guides).
-- [Learn Expo tutorial](https://docs.expo.dev/tutorial/introduction/): Follow a step-by-step tutorial where you'll create a project that runs on Android, iOS, and the web.
+```bash
+cd EduSyncApp
+npm install
+npx expo start
+```
 
-## Join the community
+Scan the QR code with **Expo Go** on a phone connected to the same network.
 
-Join our community of developers creating universal apps.
+## Multi-User Data Collection (Experiment B)
 
-- [Expo on GitHub](https://github.com/expo/expo): View our open source platform and contribute.
-- [Discord community](https://chat.expo.dev): Chat with Expo users and ask questions.
+1. Connect your PC and all participant phones to the **same WiFi network**.
+2. Run `./find_backend_ip.sh` from the project root to get the correct IP.
+3. Start backend + Expo with the detected IP.
+4. Participants scan QR code, register as students, read materials, and take quizzes.
+5. Engagement signals are logged to `backend/research_data/engagement_metrics.jsonl`.
+6. Export paired data: `python backend/scripts/export_research_csv.py`.
+
+## Project Structure
+
+```
+EduSyncApp/
+├── app/                    # Expo Router screens
+│   ├── _layout.tsx         # Root layout with providers
+│   ├── index.tsx           # Login screen
+│   ├── register.tsx        # Registration screen
+│   ├── intro.tsx           # Animated intro screen
+│   ├── (tabs)/             # Main tab navigation
+│   │   ├── explore.tsx     # Classrooms list
+│   │   ├── index.tsx       # Materials list
+│   │   ├── assignments.tsx # Assignments list
+│   │   └── progress.tsx    # Dashboard (engagement + DSP metrics)
+│   ├── classroom/[id].tsx  # Classroom detail
+│   ├── material/[id].tsx   # Material viewer + AI tools + scroll tracking
+│   └── assignment/[id].tsx # Quiz interface
+├── context/
+│   ├── AuthContext.tsx      # JWT authentication state
+│   └── IntroContext.tsx     # Intro screen control
+├── lib/
+│   ├── api.ts              # Axios API client (25+ functions)
+│   └── config.ts           # LAN-aware API URL configuration
+└── hooks/
+    └── useScrollTracker.ts # 1 Hz scroll signal acquisition (DSP input)
+```
+
+## Auth
+
+Login/register return a JWT. The Axios client sends `Authorization: Bearer <token>` on every request via an interceptor.

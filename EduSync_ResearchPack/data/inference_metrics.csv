@@ -1,0 +1,5 @@
+timestamp,operation,duration_ms,duration_s,input_chars,output_chars,chars_per_second,model,gpu_layers,platform
+2026-02-14T10:12:24.140422,ocr,167.3,0.167,1769772,14788,88392.74,llama-3-8b-q4,-1,edge
+2026-02-14T10:15:05.325130,summary,111667.16,111.667,14788,1701,15.23,llama-3-8b-q4,-1,edge
+2026-02-14T10:19:44.866193,flashcards,101620.33,101.62,14788,1226,12.06,llama-3-8b-q4,-1,edge
+2026-02-14T10:21:28.201851,quiz,99227.64,99.228,14788,1207,12.16,llama-3-8b-q4,-1,edge

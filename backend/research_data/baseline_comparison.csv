@@ -1,0 +1,5 @@
+method,pearson_r,p_value,description
+DSP (Our Method),0.8338,0.0,"Full DSP: reading_ratio, energy, ZCR weighted"
+Random Baseline,0.0381,0.720503,Random scores 0-100 (sanity check)
+Time-Only Baseline,0,1.0,Session duration scaled to 0-100
+Activity Baseline,-0.0,1.0,Mean scroll speed with bell curve

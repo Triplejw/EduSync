@@ -1,0 +1,6 @@
+metric_type,operation,count,avg_ms,std_ms,min_ms,max_ms
+inference,ocr,1,167.3,0.0,167.3,167.3
+inference,summary,1,111667.16,0.0,111667.16,111667.16
+inference,flashcards,1,101620.33,0.0,101620.33,101620.33
+inference,quiz,1,99227.64,0.0,99227.64,99227.64
+engagement,sessions,90,,,,

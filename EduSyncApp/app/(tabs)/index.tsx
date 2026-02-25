@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import {
   View,
   Text,
@@ -7,13 +7,25 @@ import {
   TouchableOpacity,
   ActivityIndicator,
   Alert,
-  TextInput,
   RefreshControl,
 } from 'react-native';
 import { useRouter } from 'expo-router';
 import * as DocumentPicker from 'expo-document-picker';
 import { useAuth } from '@/context/AuthContext';
 import * as api from '@/lib/api';
+import { getAuthErrorMessage } from '@/lib/authErrors';
+
+/** Group materials by classroom_id for class-card layout. Keys: classroom id (number) or 'unassigned' (null). */
+function groupMaterialsByClassroom(materials: any[]): Map<number | 'unassigned', any[]> {
+  const map = new Map<number | 'unassigned', any[]>();
+  const list = Array.isArray(materials) ? materials : (materials?.items ?? []);
+  for (const m of list) {
+    const key = m.classroom_id == null ? 'unassigned' : m.classroom_id;
+    if (!map.has(key)) map.set(key, []);
+    map.get(key)!.push(m);
+  }
+  return map;
+}
 
 export default function MaterialsScreen() {
   const router = useRouter();
@@ -24,12 +36,13 @@ export default function MaterialsScreen() {
   const [refreshing, setRefreshing] = useState(false);
   const [uploading, setUploading] = useState(false);
   const [status, setStatus] = useState('');
-  const [selectedClassroom, setSelectedClassroom] = useState<number | null>(null);
+  const [elapsedTime, setElapsedTime] = useState(0);
+  const timerRef = useRef<NodeJS.Timeout | null>(null);
 
   const loadData = useCallback(async () => {
     try {
       const [matRes, classRes] = await Promise.all([
-        api.listMaterials(selectedClassroom ?? undefined),
+        api.listMaterials(), // no filter – get all, then group by classroom_id
         api.listClassrooms(),
       ]);
       setMaterials(matRes);
@@ -41,77 +54,88 @@ export default function MaterialsScreen() {
       setLoading(false);
       setRefreshing(false);
     }
-  }, [selectedClassroom]);
+  }, []);
 
   useEffect(() => {
     loadData();
   }, [loadData]);
 
-  const onRefresh = () => {
-    setRefreshing(true);
-    loadData();
-  };
+  /** Open document picker and upload; use uploadTargetClassroomId if set (e.g. from "Upload to this class"). */
+  const processDocument = useCallback(
+    async (classroomId: number | null) => {
+      try {
+        const result = await DocumentPicker.getDocumentAsync({
+          type: [
+            'image/*',
+            'application/pdf',
+            'application/vnd.ms-powerpoint',
+            'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+          ],
+        });
+        if (result.canceled) return;
 
-  const processDocument = async () => {
-    try {
-      const result = await DocumentPicker.getDocumentAsync({
-        type: ['image/*', 'application/pdf'],
-      });
-      if (result.canceled) return;
+        const file = result.assets[0];
+        setUploading(true);
+        setStatus('Uploading & processing...');
+        setElapsedTime(0);
 
-      const file = result.assets[0];
-      setUploading(true);
-      setStatus('Extracting text...');
+        timerRef.current = setInterval(() => {
+          setElapsedTime((prev) => prev + 1);
+        }, 1000);
 
-      const text = await api.extractText({
-        uri: file.uri,
-        name: file.name,
-        type: file.mimeType || 'application/pdf',
-      });
+        const material = await api.uploadMaterial(
+          {
+            uri: file.uri,
+            name: file.name,
+            type: file.mimeType || 'application/pdf',
+          },
+          undefined,
+          classroomId ?? undefined
+        );
 
-      if (!text || text.length < 50) {
-        Alert.alert('Error', 'Could not extract enough text from the document');
+        setStatus('Done!');
+        Alert.alert('Success', `Material "${material.title}" created!`);
+        loadData();
+      } catch (e: any) {
+        console.error('Upload error:', e);
+        const errorMsg = getAuthErrorMessage(e, 'Upload failed');
+        if (e?.code === 'ECONNABORTED' || e?.message?.includes('timeout')) {
+          Alert.alert(
+            'Timeout',
+            'Upload is taking longer than expected. Please check if the material was created and try again.'
+          );
+        } else if (e?.message?.includes('Network Error')) {
+          Alert.alert(
+            'Network Error',
+            'Lost connection to backend. Please check your connection and try again.'
+          );
+        } else {
+          Alert.alert('Error', errorMsg);
+        }
+      } finally {
+        if (timerRef.current) {
+          clearInterval(timerRef.current);
+          timerRef.current = null;
+        }
         setUploading(false);
-        return;
+        setElapsedTime(0);
       }
+    },
+    [loadData]
+  );
 
-      setStatus('Generating AI summary...');
-      const summary = await api.generateSummary(text);
-
-      setStatus('Generating flashcards...');
-      const flashcards = await api.generateFlashcards(text);
-
-      setStatus('Generating quiz...');
-      const quiz = await api.generateQuiz(text);
-
-      const title = file.name.replace(/\.(pdf|jpg|jpeg|png)$/i, '') || 'Untitled';
-
-      setStatus('Saving...');
-      await api.createMaterial({
-        title,
-        summary,
-        flashcards_json: typeof flashcards === 'string' ? flashcards : JSON.stringify(flashcards),
-        quiz_json: typeof quiz === 'string' ? quiz : JSON.stringify(quiz),
-        classroom_id: selectedClassroom ?? undefined,
-        raw_text: text,
-      });
-
-      setStatus('Done!');
-      loadData();
-    } catch (e) {
-      console.error(e);
-      Alert.alert('Error', 'Processing failed. Check backend connection.');
-    } finally {
-      setUploading(false);
-    }
-  };
+  /** For teachers: open picker and upload to this classroom. */
+  const startUploadForClass = useCallback((classroomId: number) => {
+    processDocument(classroomId);
+  }, [processDocument]);
 
   const isTeacher = user?.role === 'teacher';
+  const grouped = groupMaterialsByClassroom(materials);
 
   if (loading) {
     return (
       <View style={styles.center}>
-        <ActivityIndicator size="large" color="#0a7ea4" />
+        <ActivityIndicator size="large" color="#00BCD4" />
       </View>
     );
   }
@@ -120,62 +144,84 @@ export default function MaterialsScreen() {
     <ScrollView
       style={styles.container}
       contentContainerStyle={styles.content}
-      refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} />}
+      refreshControl={<RefreshControl refreshing={refreshing} onRefresh={() => { setRefreshing(true); loadData(); }} />}
     >
-      {classrooms.length > 0 && (
-        <View style={styles.filterRow}>
-          <Text style={styles.filterLabel}>Classroom:</Text>
-          <ScrollView horizontal showsHorizontalScrollIndicator={false}>
-            <TouchableOpacity
-              style={[styles.filterChip, !selectedClassroom && styles.filterChipActive]}
-              onPress={() => setSelectedClassroom(null)}
-            >
-              <Text style={[styles.filterChipText, !selectedClassroom && styles.filterChipTextActive]}>All</Text>
-            </TouchableOpacity>
-            {classrooms.map((c) => (
-              <TouchableOpacity
-                key={c.id}
-                style={[styles.filterChip, selectedClassroom === c.id && styles.filterChipActive]}
-                onPress={() => setSelectedClassroom(c.id)}
-              >
-                <Text style={[styles.filterChipText, selectedClassroom === c.id && styles.filterChipTextActive]}>
-                  {c.name}
-                </Text>
-              </TouchableOpacity>
-            ))}
-          </ScrollView>
+      {uploading && (
+        <View style={styles.uploadingInfo}>
+          <ActivityIndicator size="small" color="#00BCD4" />
+          <Text style={styles.uploadingText}>
+            Uploading... {Math.floor(elapsedTime / 60)}:{(elapsedTime % 60).toString().padStart(2, '0')}
+          </Text>
+          <Text style={styles.uploadingHint}>Processing document text</Text>
         </View>
       )}
 
-      {isTeacher && (
-        <TouchableOpacity
-          style={[styles.uploadBtn, uploading && styles.uploadBtnDisabled]}
-          onPress={processDocument}
-          disabled={uploading}
-        >
-          <Text style={styles.uploadBtnText}>
-            {uploading ? status : '📤 Upload & Generate AI Content'}
-          </Text>
-        </TouchableOpacity>
-      )}
-
-      {uploading && <ActivityIndicator size="small" color="#0a7ea4" style={{ marginVertical: 8 }} />}
-
-      {materials.length === 0 ? (
-        <Text style={styles.empty}>No materials yet. {isTeacher ? 'Upload a document to get started.' : 'Materials will appear when your teacher adds them.'}</Text>
+      {classrooms.length === 0 && !grouped.has('unassigned') ? (
+        <Text style={styles.empty}>
+          {isTeacher ? 'Create a classroom (Classrooms tab), then add materials here.' : 'Join a classroom with a code from your teacher.'}
+        </Text>
       ) : (
-        materials.map((m) => (
-          <TouchableOpacity
-            key={m.id}
-            style={styles.card}
-            onPress={() => router.push(`/material/${m.id}`)}
-          >
-            <Text style={styles.cardTitle}>{m.title}</Text>
-            <Text style={styles.cardSummary} numberOfLines={2}>
-              {m.summary || 'No summary'}
-            </Text>
-          </TouchableOpacity>
-        ))
+        <>
+          {/* Class cards: one per classroom */}
+          {classrooms.map((c) => {
+            const classMats = grouped.get(c.id) || [];
+            return (
+              <View key={c.id} style={styles.classCard}>
+                <View style={styles.classCardHeader}>
+                  <Text style={styles.classCardTitle}>{c.name}</Text>
+                  {isTeacher && <Text style={styles.classCardCode}>Code: {c.code}</Text>}
+                </View>
+                {classMats.length === 0 ? (
+                  <Text style={styles.classEmpty}>No materials yet.</Text>
+                ) : (
+                  classMats.map((m) => (
+                    <TouchableOpacity
+                      key={m.id}
+                      style={styles.materialCard}
+                      onPress={() => router.push(`/material/${m.id}`)}
+                    >
+                      <Text style={styles.materialCardTitle}>{m.title}</Text>
+                      <Text style={styles.materialCardSummary} numberOfLines={2}>
+                        {m.summary || 'No summary'}
+                      </Text>
+                    </TouchableOpacity>
+                  ))
+                )}
+                {isTeacher && (
+                  <TouchableOpacity
+                    style={[styles.uploadToClassBtn, uploading && styles.uploadBtnDisabled]}
+                    onPress={() => startUploadForClass(c.id)}
+                    disabled={uploading}
+                  >
+                    <Text style={styles.uploadToClassBtnText}>Upload to this class</Text>
+                  </TouchableOpacity>
+                )}
+              </View>
+            );
+          })}
+
+          {/* Unassigned materials (teachers only) */}
+          {isTeacher && grouped.has('unassigned') && (grouped.get('unassigned')!.length > 0) && (
+            <View style={styles.classCard}>
+              <View style={styles.classCardHeader}>
+                <Text style={styles.classCardTitle}>Unassigned</Text>
+                <Text style={styles.classCardCode}>Materials not in a class</Text>
+              </View>
+              {(grouped.get('unassigned') || []).map((m: any) => (
+                <TouchableOpacity
+                  key={m.id}
+                  style={styles.materialCard}
+                  onPress={() => router.push(`/material/${m.id}`)}
+                >
+                  <Text style={styles.materialCardTitle}>{m.title}</Text>
+                  <Text style={styles.materialCardSummary} numberOfLines={2}>
+                    {m.summary || 'No summary'}
+                  </Text>
+                </TouchableOpacity>
+              ))}
+            </View>
+          )}
+        </>
       )}
     </ScrollView>
   );
@@ -185,39 +231,48 @@ const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: '#f4f6f8' },
   content: { padding: 16, paddingBottom: 40 },
   center: { flex: 1, justifyContent: 'center', alignItems: 'center' },
-  filterRow: { marginBottom: 16 },
-  filterLabel: { fontSize: 14, color: '#666', marginBottom: 8 },
-  filterChip: {
-    paddingHorizontal: 14,
-    paddingVertical: 8,
-    borderRadius: 20,
-    backgroundColor: '#e0e0e0',
-    marginRight: 8,
-  },
-  filterChipActive: { backgroundColor: '#0a7ea4' },
-  filterChipText: { fontSize: 14, color: '#333' },
-  filterChipTextActive: { color: '#fff' },
-  uploadBtn: {
-    backgroundColor: '#0a7ea4',
-    padding: 16,
-    borderRadius: 12,
+  uploadingInfo: {
     alignItems: 'center',
-    marginBottom: 20,
-  },
-  uploadBtnDisabled: { opacity: 0.7 },
-  uploadBtnText: { color: '#fff', fontSize: 16, fontWeight: '600' },
-  empty: { textAlign: 'center', color: '#666', marginTop: 40, paddingHorizontal: 24 },
-  card: {
-    backgroundColor: '#fff',
+    marginBottom: 16,
     padding: 16,
+    backgroundColor: '#e8f4f8',
     borderRadius: 12,
-    marginBottom: 12,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 1 },
-    shadowOpacity: 0.05,
-    shadowRadius: 2,
-    elevation: 2,
   },
-  cardTitle: { fontSize: 18, fontWeight: '600', color: '#333', marginBottom: 6 },
-  cardSummary: { fontSize: 14, color: '#666', lineHeight: 20 },
+  uploadingText: { marginTop: 8, fontSize: 14, color: '#00BCD4', fontWeight: '500' },
+  uploadingHint: { marginTop: 4, fontSize: 12, color: '#666' },
+  uploadBtnDisabled: { opacity: 0.7 },
+  empty: { textAlign: 'center', color: '#666', marginTop: 40, paddingHorizontal: 24 },
+  classCard: {
+    backgroundColor: '#fff',
+    borderRadius: 16,
+    marginBottom: 20,
+    padding: 16,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.08,
+    shadowRadius: 8,
+    elevation: 3,
+  },
+  classCardHeader: { marginBottom: 12 },
+  classCardTitle: { fontSize: 20, fontWeight: '700', color: '#1a1a1a' },
+  classCardCode: { fontSize: 13, color: '#00BCD4', marginTop: 4 },
+  classEmpty: { fontSize: 14, color: '#888', marginBottom: 12 },
+  materialCard: {
+    backgroundColor: '#f8fafc',
+    padding: 14,
+    borderRadius: 12,
+    marginBottom: 10,
+    borderLeftWidth: 4,
+    borderLeftColor: '#00BCD4',
+  },
+  materialCardTitle: { fontSize: 16, fontWeight: '600', color: '#333', marginBottom: 4 },
+  materialCardSummary: { fontSize: 14, color: '#666', lineHeight: 20 },
+  uploadToClassBtn: {
+    backgroundColor: '#00BCD4',
+    padding: 12,
+    borderRadius: 10,
+    alignItems: 'center',
+    marginTop: 8,
+  },
+  uploadToClassBtnText: { color: '#fff', fontSize: 15, fontWeight: '600' },
 });

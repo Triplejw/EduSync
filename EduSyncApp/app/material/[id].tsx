@@ -60,6 +60,13 @@ function getPdfViewerHtml(base64: string): string {
     }).catch(function(err) {
       document.getElementById('loading').textContent = 'Failed to load PDF: ' + (err.message || 'Unknown error');
     });
+    // Report scroll position every 1s for engagement signal (DSP 1 Hz sampling)
+    setInterval(function() {
+      var scrollTop = window.pageYOffset !== undefined ? window.pageYOffset : document.documentElement.scrollTop;
+      if (window.ReactNativeWebView) {
+        window.ReactNativeWebView.postMessage(JSON.stringify({ type: 'pdfScroll', scrollTop: scrollTop }));
+      }
+    }, 1000);
   </script>
 </body>
 </html>`;
@@ -83,10 +90,13 @@ export default function MaterialDetailScreen() {
   const [downloadError, setDownloadError] = useState<string | null>(null);
   const [pdfBase64, setPdfBase64] = useState<string | null>(null);
 
-  const { onScroll, getScrollSignal, reset } = useScrollTracker();
+  // Multimodal engagement: scroll tracking (1Hz) for DSP-based engagement analytics.
+  // Native ScrollView (summary/flashcards) uses onScroll; PDF WebView uses postMessage + pushDelta.
+  const { onScroll, getScrollSignal, reset, pushDelta } = useScrollTracker();
   const isStudent = user?.role === 'student';
   const isTeacher = user?.role === 'teacher';
   const analyticsSubmitted = useRef(false);
+  const lastPdfScrollTop = useRef(0);
 
   const loadMaterial = useCallback(async () => {
     if (!id) return;
@@ -105,7 +115,25 @@ export default function MaterialDetailScreen() {
     api.listClassrooms().then(setClassrooms);
     reset();
     analyticsSubmitted.current = false;
+    lastPdfScrollTop.current = 0;
   }, [loadMaterial, reset]);
+
+  const handlePdfScrollMessage = useCallback(
+    (event: { nativeEvent: { data: string } }) => {
+      if (!isStudent || activeTab !== 'document') return;
+      try {
+        const data = JSON.parse(event.nativeEvent.data);
+        if (data?.type === 'pdfScroll' && typeof data.scrollTop === 'number') {
+          const delta = Math.abs(data.scrollTop - lastPdfScrollTop.current);
+          pushDelta(delta);
+          lastPdfScrollTop.current = data.scrollTop;
+        }
+      } catch {
+        // ignore malformed messages
+      }
+    },
+    [isStudent, activeTab, pushDelta]
+  );
 
   const submitScrollAnalytics = useCallback(async () => {
     if (!isStudent || !material?.id || analyticsSubmitted.current) return;
@@ -232,8 +260,10 @@ export default function MaterialDetailScreen() {
         material_id: material.id,
       });
       Alert.alert('Success', 'Assignment posted to students!');
-    } catch (e) {
-      Alert.alert('Error', 'Could not create assignment');
+    } catch (e: any) {
+      const detail = e?.response?.data?.detail;
+      const msg = Array.isArray(detail) ? detail.join(' ') : (typeof detail === 'string' ? detail : null) ?? e?.message ?? 'Could not create assignment';
+      Alert.alert('Error', typeof msg === 'string' ? msg : 'Could not create assignment');
     }
   };
 
@@ -336,7 +366,7 @@ export default function MaterialDetailScreen() {
   if (loading || !material) {
     return (
       <View style={styles.center}>
-        <ActivityIndicator size="large" color="#0a7ea4" />
+        <ActivityIndicator size="large" color="#00BCD4" />
       </View>
     );
   }
@@ -379,8 +409,12 @@ export default function MaterialDetailScreen() {
       <ScrollView
         style={styles.content}
         contentContainerStyle={styles.contentInner}
-        onScroll={isStudent ? onScroll : undefined}
-        scrollEventThrottle={isStudent ? 100 : undefined}
+        onScroll={
+          isStudent && !(activeTab === 'document' && pdfBase64) ? onScroll : undefined
+        }
+        scrollEventThrottle={
+          isStudent && !(activeTab === 'document' && pdfBase64) ? 100 : undefined
+        }
       >
         {/* Document Tab */}
         {activeTab === 'document' && (
@@ -395,7 +429,7 @@ export default function MaterialDetailScreen() {
               </View>
             ) : downloading ? (
               <View style={styles.documentPlaceholder}>
-                <ActivityIndicator size="large" color="#0a7ea4" />
+                <ActivityIndicator size="large" color="#00BCD4" />
                 <Text style={styles.downloadingText}>Downloading document...</Text>
               </View>
             ) : isImage && localFileUri ? (
@@ -413,11 +447,12 @@ export default function MaterialDetailScreen() {
                     style={styles.pdfWebView}
                     scalesPageToFit
                     scrollEnabled
+                    onMessage={handlePdfScrollMessage}
                     {...(Platform.OS === 'android' && { androidLayerType: 'hardware' })}
                   />
                 ) : (
                   <View style={styles.documentPlaceholder}>
-                    <ActivityIndicator size="large" color="#0a7ea4" />
+                    <ActivityIndicator size="large" color="#00BCD4" />
                     <Text style={styles.downloadingText}>Loading PDF...</Text>
                   </View>
                 )}
@@ -614,13 +649,13 @@ const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: '#f4f6f8' },
   center: { flex: 1, justifyContent: 'center', alignItems: 'center' },
   header: { backgroundColor: '#fff', padding: 16, paddingTop: 50, borderBottomWidth: 1, borderColor: '#eee' },
-  backBtn: { fontSize: 16, color: '#0a7ea4', marginBottom: 8 },
+  backBtn: { fontSize: 16, color: '#00BCD4', marginBottom: 8 },
   title: { fontSize: 22, fontWeight: '600', color: '#333' },
   tabs: { flexDirection: 'row', backgroundColor: '#fff', borderBottomWidth: 1, borderColor: '#eee' },
   tab: { flex: 1, padding: 12, alignItems: 'center' },
-  tabActive: { borderBottomWidth: 3, borderBottomColor: '#0a7ea4' },
+  tabActive: { borderBottomWidth: 3, borderBottomColor: '#00BCD4' },
   tabText: { fontSize: 14, color: '#666' },
-  tabTextActive: { color: '#0a7ea4', fontWeight: '600' },
+  tabTextActive: { color: '#00BCD4', fontWeight: '600' },
   content: { flex: 1 },
   contentInner: { padding: 20, paddingBottom: 40 },
   // Document tab
@@ -636,8 +671,8 @@ const styles = StyleSheet.create({
   pdfViewerWrap: { width: '100%', flex: 1, minHeight: 500 },
   pdfWebView: { width: '100%', minHeight: 500, backgroundColor: '#525659', borderRadius: 12 },
   openExternalLink: { marginTop: 12, paddingVertical: 10, alignItems: 'center' },
-  openExternalLinkText: { fontSize: 14, color: '#0a7ea4', fontWeight: '600' },
-  openBtn: { backgroundColor: '#0a7ea4', paddingVertical: 14, paddingHorizontal: 32, borderRadius: 12 },
+  openExternalLinkText: { fontSize: 14, color: '#00BCD4', fontWeight: '600' },
+  openBtn: { backgroundColor: '#00BCD4', paddingVertical: 14, paddingHorizontal: 32, borderRadius: 12 },
   openBtnDisabled: { opacity: 0.7 },
   openBtnText: { color: '#fff', fontSize: 16, fontWeight: '600' },
   // Summary tab
@@ -646,7 +681,7 @@ const styles = StyleSheet.create({
   generateContainer: { alignItems: 'center', paddingVertical: 40 },
   generateIcon: { fontSize: 48, marginBottom: 16 },
   generateText: { fontSize: 16, color: '#666', marginBottom: 20, textAlign: 'center' },
-  generateBtn: { backgroundColor: '#0a7ea4', paddingVertical: 14, paddingHorizontal: 32, borderRadius: 12, minWidth: 200, alignItems: 'center' },
+  generateBtn: { backgroundColor: '#00BCD4', paddingVertical: 14, paddingHorizontal: 32, borderRadius: 12, minWidth: 200, alignItems: 'center' },
   generateBtnDisabled: { opacity: 0.7 },
   generateBtnText: { color: '#fff', fontSize: 16, fontWeight: '600' },
   generatingHint: { marginTop: 12, fontSize: 13, color: '#888' },
@@ -657,18 +692,18 @@ const styles = StyleSheet.create({
     position: 'absolute', left: 0, right: 0, top: 0, minHeight: 220, padding: 24, borderRadius: 16, justifyContent: 'center',
     shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.12, shadowRadius: 8, elevation: 4,
   },
-  flashcardFront: { backgroundColor: '#e3f2fd', borderWidth: 2, borderColor: '#0a7ea4' },
+  flashcardFront: { backgroundColor: '#e3f2fd', borderWidth: 2, borderColor: '#00BCD4' },
   flashcardBack: { backgroundColor: '#e8f5e9', borderWidth: 2, borderColor: '#2e7d32' },
-  cardLabel: { fontSize: 12, color: '#0a7ea4', marginBottom: 12, textTransform: 'uppercase', fontWeight: '700' },
+  cardLabel: { fontSize: 12, color: '#00BCD4', marginBottom: 12, textTransform: 'uppercase', fontWeight: '700' },
   cardText: { fontSize: 19, lineHeight: 28, color: '#1a1a1a' },
   cardLabelBack: { fontSize: 12, color: '#2e7d32', marginBottom: 12, textTransform: 'uppercase', fontWeight: '700' },
   cardTextBack: { fontSize: 19, lineHeight: 28, color: '#1a1a1a' },
-  tapHint: { fontSize: 12, color: '#0a7ea4', marginTop: 16, textAlign: 'center', opacity: 0.7 },
+  tapHint: { fontSize: 12, color: '#00BCD4', marginTop: 16, textAlign: 'center', opacity: 0.7 },
   tapHintBack: { fontSize: 12, color: '#2e7d32', marginTop: 16, textAlign: 'center', opacity: 0.7 },
   progressBarWrap: { width: '100%', height: 6, backgroundColor: '#e0e0e0', borderRadius: 3, marginTop: 20, overflow: 'hidden' },
-  progressBarFill: { height: '100%', backgroundColor: '#0a7ea4', borderRadius: 3 },
+  progressBarFill: { height: '100%', backgroundColor: '#00BCD4', borderRadius: 3 },
   cardNav: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginTop: 20, width: '100%', paddingHorizontal: 8 },
-  navBtn: { padding: 14, backgroundColor: '#0a7ea4', borderRadius: 12 },
+  navBtn: { padding: 14, backgroundColor: '#00BCD4', borderRadius: 12 },
   navBtnDisabled: { opacity: 0.4 },
   navBtnText: { color: '#fff', fontWeight: '600', fontSize: 16 },
   cardCounter: { fontSize: 15, color: '#666', fontWeight: '500', marginTop: 8 },
@@ -680,10 +715,10 @@ const styles = StyleSheet.create({
   generateQuizBtnText: { color: '#fff', fontSize: 16, fontWeight: '600' },
   classroomPicker: { marginBottom: 12, maxHeight: 44 },
   classroomChip: { paddingHorizontal: 14, paddingVertical: 8, borderRadius: 20, backgroundColor: '#e0e0e0', marginRight: 8 },
-  classroomChipActive: { backgroundColor: '#0a7ea4' },
+  classroomChipActive: { backgroundColor: '#00BCD4' },
   classroomChipText: { fontSize: 14, color: '#333' },
   classroomChipTextActive: { color: '#fff' },
-  postBtn: { backgroundColor: '#0a7ea4', padding: 14, borderRadius: 10, alignItems: 'center' },
+  postBtn: { backgroundColor: '#00BCD4', padding: 14, borderRadius: 10, alignItems: 'center' },
   postBtnDisabled: { opacity: 0.5 },
   postBtnText: { color: '#fff', fontWeight: '600' },
 });

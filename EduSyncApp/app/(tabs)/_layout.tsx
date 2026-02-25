@@ -9,11 +9,11 @@ export default function TabLayout() {
   const colorScheme = useColorScheme();
   const { user, loading } = useAuth();
 
-  // Show white screen with spinner during sign out transition (prevents black screen)
+  // Show blank screen when loading or not authenticated
   if (loading || !user) {
     return (
       <View style={{ flex: 1, backgroundColor: '#fff', justifyContent: 'center', alignItems: 'center' }}>
-        <ActivityIndicator size="large" color="#0a7ea4" />
+        <ActivityIndicator size="large" color="#00BCD4" />
       </View>
     );
   }
@@ -25,11 +25,19 @@ export default function TabLayout() {
       screenOptions={{
         tabBarActiveTintColor: tint,
         headerShown: true,
-        headerStyle: { backgroundColor: '#0a7ea4' },
+        headerStyle: { backgroundColor: '#00BCD4' },
         headerTintColor: '#fff',
         headerTitleStyle: { fontWeight: '600' },
       }}
     >
+      {/* Classrooms tab is now first - main entry point */}
+      <Tabs.Screen
+        name="explore"
+        options={{
+          title: 'Classrooms',
+          tabBarIcon: ({ color }) => <IconSymbol size={26} name="person.3.fill" color={color} />,
+        }}
+      />
       <Tabs.Screen
         name="index"
         options={{
@@ -47,15 +55,8 @@ export default function TabLayout() {
       <Tabs.Screen
         name="progress"
         options={{
-          title: user?.role === 'teacher' ? 'Students' : 'My Scores',
+          title: user?.role === 'teacher' ? 'Dashboard' : 'My Scores',
           tabBarIcon: ({ color }) => <IconSymbol size={26} name="chart.bar.fill" color={color} />,
-        }}
-      />
-      <Tabs.Screen
-        name="explore"
-        options={{
-          title: 'Classrooms',
-          tabBarIcon: ({ color }) => <IconSymbol size={26} name="person.3.fill" color={color} />,
         }}
       />
     </Tabs>

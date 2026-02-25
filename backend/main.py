@@ -19,7 +19,7 @@ os.makedirs(UPLOAD_DIR, exist_ok=True)
 
 # Import our custom services
 from llm_service import generate_quiz, generate_summary, generate_flashcards
-from parser_service import extract_text_from_image
+from parser_service import extract_text_from_document
 from database import (
     SessionLocal,
     User,
@@ -34,23 +34,39 @@ from database import (
 from auth import get_password_hash, verify_password, get_current_user
 from jwt_utils import create_access_token
 from signal_processor import calculate_engagement
+from vision_service import estimate_pose
 from metrics_logger import Timer, log_inference_metrics, log_engagement_metrics, get_metrics_summary
 
 app = FastAPI(title="EduSync API")
 
+# CORS configuration: restrict origins in production
+# Set EDUSYNC_CORS_ORIGINS="https://app.example.com,https://example.com" for production
+_cors_origins_env = os.environ.get("EDUSYNC_CORS_ORIGINS", "")
+if _cors_origins_env:
+    ALLOWED_ORIGINS = [origin.strip() for origin in _cors_origins_env.split(",") if origin.strip()]
+else:
+    # Development default: allow all (with warning logged at startup)
+    ALLOWED_ORIGINS = ["*"]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=ALLOWED_ORIGINS,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
 
-# --- Create Test Accounts on Startup (DEBUG MODE) ---
+# --- Create Test Accounts on Startup (Gated by Environment Variable) ---
 @app.on_event("startup")
 def create_test_accounts():
-    """Create test accounts for easy debugging. Remove in production."""
+    """
+    Create test accounts only when EDUSYNC_CREATE_TEST_ACCOUNTS=1.
+    This prevents backdoor access in production deployments.
+    """
+    if os.environ.get("EDUSYNC_CREATE_TEST_ACCOUNTS") != "1":
+        return  # Skip test account creation in production
+
     db = SessionLocal()
     try:
         test_accounts = [
@@ -73,6 +89,15 @@ def create_test_accounts():
         db.commit()
     finally:
         db.close()
+
+
+@app.on_event("startup")
+def log_security_warnings():
+    """Log security configuration warnings at startup."""
+    if ALLOWED_ORIGINS == ["*"]:
+        print("⚠️  CORS allows all origins. Set EDUSYNC_CORS_ORIGINS for production.")
+    if not os.environ.get("EDUSYNC_JWT_SECRET"):
+        print("⚠️  JWT secret not set. Set EDUSYNC_JWT_SECRET for production.")
 
 
 def generate_class_code():
@@ -99,6 +124,7 @@ class LoginRequest(BaseModel):
 
 class ClassroomCreate(BaseModel):
     name: str
+    subject_name: Optional[str] = None
 
 
 class ClassroomJoin(BaseModel):
@@ -129,6 +155,13 @@ class QuizSubmit(BaseModel):
 class SubmitAnalyticsRequest(BaseModel):
     material_id: int
     scroll_signal: list  # List of scroll deltas (pixels per second) at 1Hz
+
+
+class AnalyzeAttentionRequest(BaseModel):
+    image: str  # Base64-encoded image
+    student_id: str
+    timestamp: int
+    assignment_id: Optional[int] = None  # For quiz-attention correlation
 
 
 # --- Health ---
@@ -217,6 +250,12 @@ def create_flashcards(request: TextRequest):
 
 # --- Upload Material (Combined Pipeline) ---
 
+# Upload validation settings
+UPLOAD_MAX_SIZE_MB = int(os.environ.get("EDUSYNC_UPLOAD_MAX_MB", "50"))
+UPLOAD_MAX_SIZE_BYTES = UPLOAD_MAX_SIZE_MB * 1024 * 1024
+UPLOAD_ALLOWED_EXTENSIONS = {".pdf", ".pptx", ".ppt", ".jpg", ".jpeg", ".png"}
+
+
 @app.post("/upload-material", dependencies=[Depends(get_current_user)])
 async def upload_material(
     file: UploadFile = File(...),
@@ -226,20 +265,37 @@ async def upload_material(
     user: User = Depends(get_current_user),
 ):
     """
-    Upload a file (PDF/image), extract text via OCR, generate AI content,
-    and save everything including the original file.
+    Upload a file (PDF/image/PPT), extract text via OCR, and save.
+    AI content (summary, flashcards, quiz) is generated on-demand via separate endpoints.
+
+    Validation:
+        - Max file size: 50MB (configurable via EDUSYNC_UPLOAD_MAX_MB)
+        - Allowed extensions: .pdf, .pptx, .ppt, .jpg, .jpeg, .png
     """
     if user.role != "teacher":
         raise HTTPException(403, "Only teachers can upload materials")
 
+    # Validate file extension
+    file_ext = (os.path.splitext(file.filename or "")[-1] or "").lower()
+    if file_ext not in UPLOAD_ALLOWED_EXTENSIONS:
+        raise HTTPException(
+            400,
+            f"Invalid file type '{file_ext}'. Allowed: {', '.join(sorted(UPLOAD_ALLOWED_EXTENSIONS))}"
+        )
+
     print(f"📤 Upload started: {file.filename} by {user.email}")
 
+    # Read file with size validation
+    contents = await file.read()
+    if len(contents) > UPLOAD_MAX_SIZE_BYTES:
+        raise HTTPException(
+            400,
+            f"File too large ({len(contents) / 1024 / 1024:.1f}MB). Maximum: {UPLOAD_MAX_SIZE_MB}MB"
+        )
+
     # 1. Save the file to disk
-    file_ext = os.path.splitext(file.filename or "")[-1] or ".pdf"
     unique_filename = f"{uuid.uuid4().hex}{file_ext}"
     file_path = os.path.join(UPLOAD_DIR, unique_filename)
-
-    contents = await file.read()
     with open(file_path, "wb") as f:
         f.write(contents)
     print(f"   ✅ File saved: {unique_filename} ({len(contents)} bytes)")
@@ -248,66 +304,23 @@ async def upload_material(
     print("   🔍 Running OCR...")
     with Timer("ocr") as ocr_timer:
         try:
-            raw_text = extract_text_from_image(contents)
+            raw_text = extract_text_from_document(contents, file_ext)
             print(f"   ✅ OCR complete: {len(raw_text)} characters extracted")
         except Exception as e:
             print(f"   ❌ OCR error: {e}")
             raw_text = f"Error extracting text: {e}"
     log_inference_metrics("ocr", ocr_timer.duration_ms, len(contents), len(raw_text))
 
-    # 3. Generate AI content (summary, flashcards, quiz) with metrics logging
-    summary = ""
-    flashcards_json = "[]"
-    quiz_json = "[]"
-
-    if raw_text and len(raw_text) > 50:
-        print("   🤖 Generating AI summary...")
-        with Timer("summary") as summary_timer:
-            try:
-                summary = generate_summary(raw_text)
-                print(f"   ✅ Summary generated: {len(summary)} chars")
-            except Exception as e:
-                print(f"   ❌ Summary error: {e}")
-                summary = ""
-        log_inference_metrics("summary", summary_timer.duration_ms, len(raw_text), len(summary))
-
-        print("   🤖 Generating flashcards...")
-        with Timer("flashcards") as flashcards_timer:
-            try:
-                flashcards_json = generate_flashcards(raw_text)
-                if not isinstance(flashcards_json, str):
-                    flashcards_json = json.dumps(flashcards_json)
-                print(f"   ✅ Flashcards generated")
-            except Exception as e:
-                print(f"   ❌ Flashcards error: {e}")
-                flashcards_json = "[]"
-        log_inference_metrics("flashcards", flashcards_timer.duration_ms, len(raw_text), len(flashcards_json))
-
-        print("   🤖 Generating quiz...")
-        with Timer("quiz") as quiz_timer:
-            try:
-                quiz_json = generate_quiz(raw_text)
-                if not isinstance(quiz_json, str):
-                    quiz_json = json.dumps(quiz_json)
-                print(f"   ✅ Quiz generated")
-            except Exception as e:
-                print(f"   ❌ Quiz error: {e}")
-                quiz_json = "[]"
-        log_inference_metrics("quiz", quiz_timer.duration_ms, len(raw_text), len(quiz_json))
-    else:
-        print(f"   ⚠️ Skipping AI generation (text too short: {len(raw_text)} chars)")
-
-    # 4. Create the Material record
-    # Decode URL-encoded filename (e.g., "Array%20notes.pdf" -> "Array notes.pdf")
+    # 3. Create the Material record (NO AI generation - that's on-demand now)
     decoded_filename = unquote(file.filename or "Untitled")
     material_title = title or decoded_filename.rsplit(".", 1)[0]
     material = Material(
         title=material_title,
-        file_path=unique_filename,  # Store relative filename
+        file_path=unique_filename,
         raw_text=raw_text,
-        summary=summary,
-        flashcards_json=flashcards_json,
-        quiz_json=quiz_json,
+        summary="",
+        flashcards_json="[]",
+        quiz_json="[]",
         classroom_id=classroom_id,
     )
     db.add(material)
@@ -321,8 +334,109 @@ async def upload_material(
         "id": material.id,
         "title": material.title,
         "file_path": material.file_path,
-        "summary_preview": summary[:200] + "..." if len(summary) > 200 else summary,
+        "has_raw_text": len(raw_text) > 50,
     }
+
+
+# --- On-Demand AI Generation Endpoints ---
+
+@app.post("/materials/{material_id}/generate-summary", dependencies=[Depends(get_current_user)])
+def generate_material_summary(material_id: int, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    """Generate summary for a material on-demand. Returns cached if already generated."""
+    material = db.query(Material).filter(Material.id == material_id).first()
+    if not material:
+        raise HTTPException(404, "Material not found")
+    
+    # Return cached if exists
+    if material.summary and len(material.summary) > 10:
+        return {"summary": material.summary, "cached": True}
+    
+    if not material.raw_text or len(material.raw_text) < 50:
+        raise HTTPException(400, "Material has no extractable text")
+    
+    print(f"🤖 Generating summary for material {material_id}...")
+    with Timer("summary") as summary_timer:
+        try:
+            summary = generate_summary(material.raw_text)
+            print(f"   ✅ Summary generated: {len(summary)} chars")
+        except Exception as e:
+            print(f"   ❌ Summary error: {e}")
+            raise HTTPException(500, f"Failed to generate summary: {e}")
+    log_inference_metrics("summary", summary_timer.duration_ms, len(material.raw_text), len(summary))
+    
+    material.summary = summary
+    db.commit()
+    return {"summary": summary, "cached": False}
+
+
+@app.post("/materials/{material_id}/generate-flashcards", dependencies=[Depends(get_current_user)])
+def generate_material_flashcards(material_id: int, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    """Generate flashcards for a material on-demand. Returns cached if already generated."""
+    material = db.query(Material).filter(Material.id == material_id).first()
+    if not material:
+        raise HTTPException(404, "Material not found")
+    
+    # Return cached if exists (not empty array)
+    try:
+        existing = json.loads(material.flashcards_json) if material.flashcards_json else []
+        if len(existing) > 0:
+            return {"flashcards": material.flashcards_json, "cached": True}
+    except:
+        pass
+    
+    if not material.raw_text or len(material.raw_text) < 50:
+        raise HTTPException(400, "Material has no extractable text")
+    
+    print(f"🤖 Generating flashcards for material {material_id}...")
+    with Timer("flashcards") as flashcards_timer:
+        try:
+            flashcards_json = generate_flashcards(material.raw_text)
+            if not isinstance(flashcards_json, str):
+                flashcards_json = json.dumps(flashcards_json)
+            print(f"   ✅ Flashcards generated")
+        except Exception as e:
+            print(f"   ❌ Flashcards error: {e}")
+            raise HTTPException(500, f"Failed to generate flashcards: {e}")
+    log_inference_metrics("flashcards", flashcards_timer.duration_ms, len(material.raw_text), len(flashcards_json))
+    
+    material.flashcards_json = flashcards_json
+    db.commit()
+    return {"flashcards": flashcards_json, "cached": False}
+
+
+@app.post("/materials/{material_id}/generate-quiz", dependencies=[Depends(get_current_user)])
+def generate_material_quiz(material_id: int, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    """Generate quiz for a material on-demand. Returns cached if already generated."""
+    material = db.query(Material).filter(Material.id == material_id).first()
+    if not material:
+        raise HTTPException(404, "Material not found")
+    
+    # Return cached if exists (not empty array)
+    try:
+        existing = json.loads(material.quiz_json) if material.quiz_json else []
+        if len(existing) > 0:
+            return {"quiz": material.quiz_json, "cached": True}
+    except:
+        pass
+    
+    if not material.raw_text or len(material.raw_text) < 50:
+        raise HTTPException(400, "Material has no extractable text")
+    
+    print(f"🤖 Generating quiz for material {material_id}...")
+    with Timer("quiz") as quiz_timer:
+        try:
+            quiz_json = generate_quiz(material.raw_text)
+            if not isinstance(quiz_json, str):
+                quiz_json = json.dumps(quiz_json)
+            print(f"   ✅ Quiz generated")
+        except Exception as e:
+            print(f"   ❌ Quiz error: {e}")
+            raise HTTPException(500, f"Failed to generate quiz: {e}")
+    log_inference_metrics("quiz", quiz_timer.duration_ms, len(material.raw_text), len(quiz_json))
+    
+    material.quiz_json = quiz_json
+    db.commit()
+    return {"quiz": quiz_json, "cached": False}
 
 
 @app.get("/materials/{material_id}/file", dependencies=[Depends(get_current_user)])
@@ -344,11 +458,11 @@ def create_classroom(req: ClassroomCreate, db: Session = Depends(get_db), user: 
     if user.role != "teacher":
         raise HTTPException(403, "Only teachers can create classrooms")
     code = generate_class_code()
-    classroom = Classroom(name=req.name, code=code, teacher_id=user.id)
+    classroom = Classroom(name=req.name, subject_name=req.subject_name, code=code, teacher_id=user.id)
     db.add(classroom)
     db.commit()
     db.refresh(classroom)
-    return {"id": classroom.id, "name": classroom.name, "code": classroom.code}
+    return {"id": classroom.id, "name": classroom.name, "code": classroom.code, "subject_name": classroom.subject_name}
 
 
 @app.get("/classrooms", dependencies=[Depends(get_current_user)])
@@ -359,7 +473,48 @@ def list_classrooms(db: Session = Depends(get_db), user: User = Depends(get_curr
         enrollments = db.query(ClassroomEnrollment).filter(ClassroomEnrollment.user_id == user.id).all()
         room_ids = [e.classroom_id for e in enrollments]
         rooms = db.query(Classroom).filter(Classroom.id.in_(room_ids)).all()
-    return [{"id": r.id, "name": r.name, "code": r.code} for r in rooms]
+    result = []
+    for r in rooms:
+        teacher = db.query(User).filter(User.id == r.teacher_id).first()
+        result.append({
+            "id": r.id,
+            "name": r.name,
+            "code": r.code,
+            "subject_name": r.subject_name,
+            "teacher_name": teacher.full_name if teacher else None,
+        })
+    return result
+
+
+@app.get("/classrooms/{classroom_id}", dependencies=[Depends(get_current_user)])
+def get_classroom(classroom_id: int, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    """Get a single classroom with details."""
+    classroom = db.query(Classroom).filter(Classroom.id == classroom_id).first()
+    if not classroom:
+        raise HTTPException(404, "Classroom not found")
+    # Check access
+    if user.role == "teacher":
+        if classroom.teacher_id != user.id:
+            raise HTTPException(403, "Not your classroom")
+    else:
+        enrollment = db.query(ClassroomEnrollment).filter(
+            ClassroomEnrollment.classroom_id == classroom_id,
+            ClassroomEnrollment.user_id == user.id,
+        ).first()
+        if not enrollment:
+            raise HTTPException(403, "Not enrolled in this classroom")
+    teacher = db.query(User).filter(User.id == classroom.teacher_id).first()
+    student_count = db.query(ClassroomEnrollment).filter(ClassroomEnrollment.classroom_id == classroom_id).count()
+    material_count = db.query(Material).filter(Material.classroom_id == classroom_id).count()
+    return {
+        "id": classroom.id,
+        "name": classroom.name,
+        "code": classroom.code,
+        "subject_name": classroom.subject_name,
+        "teacher_name": teacher.full_name if teacher else None,
+        "student_count": student_count,
+        "material_count": material_count,
+    }
 
 
 @app.post("/classrooms/join", dependencies=[Depends(get_current_user)])
@@ -398,7 +553,28 @@ def create_material(req: MaterialCreate, db: Session = Depends(get_db), user: Us
 
 
 @app.get("/materials", dependencies=[Depends(get_current_user)])
-def list_materials(classroom_id: Optional[int] = None, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+def list_materials(
+    classroom_id: Optional[int] = None,
+    skip: int = 0,
+    limit: int = 50,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user)
+):
+    """
+    List materials with pagination.
+
+    Args:
+        classroom_id: Filter by classroom (optional)
+        skip: Number of items to skip (offset)
+        limit: Maximum items to return (default 50, max 200)
+
+    Returns:
+        {"items": [...], "total": N, "skip": N, "limit": N}
+    """
+    # Validate pagination params
+    limit = min(max(1, limit), 200)  # Clamp to 1-200
+    skip = max(0, skip)
+
     q = db.query(Material)
     if user.role == "teacher":
         # Teachers see materials from their classrooms or unassigned materials
@@ -407,14 +583,30 @@ def list_materials(classroom_id: Optional[int] = None, db: Session = Depends(get
             (Material.classroom_id.in_(teacher_room_ids)) | (Material.classroom_id.is_(None))
         )
     else:
-        # Students see materials from classrooms they're enrolled in
+        # Students see materials from classrooms they're enrolled in OR materials linked to assignments in those classrooms
         enrollments = db.query(ClassroomEnrollment).filter(ClassroomEnrollment.user_id == user.id).all()
         room_ids = [e.classroom_id for e in enrollments]
-        q = q.filter(Material.classroom_id.in_(room_ids))
+        if room_ids:
+            assignment_material_ids = [
+                r[0] for r in db.query(Assignment.material_id).filter(
+                    Assignment.classroom_id.in_(room_ids),
+                    Assignment.material_id.isnot(None),
+                ).distinct().all()
+            ]
+            q = q.filter(
+                (Material.classroom_id.in_(room_ids)) | (Material.id.in_(assignment_material_ids))
+            )
+        else:
+            q = q.filter(Material.id == -1)  # No enrollments -> no materials
     if classroom_id:
         q = q.filter(Material.classroom_id == classroom_id)
-    materials = q.order_by(Material.created_at.desc()).all()
-    return [
+
+    # Get total count before pagination
+    total = q.count()
+
+    # Apply pagination
+    materials = q.order_by(Material.created_at.desc()).offset(skip).limit(limit).all()
+    items = [
         {
             "id": m.id,
             "title": m.title,
@@ -426,6 +618,22 @@ def list_materials(classroom_id: Optional[int] = None, db: Session = Depends(get
         }
         for m in materials
     ]
+    return {"items": items, "total": total, "skip": skip, "limit": limit}
+
+
+def _student_can_access_material(material: Material, user: User, db: Session) -> bool:
+    """True if student is allowed to see this material (enrolled classroom or assignment-linked)."""
+    enrollments = db.query(ClassroomEnrollment).filter(ClassroomEnrollment.user_id == user.id).all()
+    room_ids = [e.classroom_id for e in enrollments]
+    if not room_ids:
+        return False
+    if material.classroom_id in room_ids:
+        return True
+    exists = db.query(Assignment).filter(
+        Assignment.classroom_id.in_(room_ids),
+        Assignment.material_id == material.id,
+    ).first()
+    return exists is not None
 
 
 @app.get("/materials/{material_id}", dependencies=[Depends(get_current_user)])
@@ -433,6 +641,8 @@ def get_material(material_id: int, db: Session = Depends(get_db), user: User = D
     material = db.query(Material).filter(Material.id == material_id).first()
     if not material:
         raise HTTPException(404, "Material not found")
+    if user.role == "student" and not _student_can_access_material(material, user, db):
+        raise HTTPException(403, "You do not have access to this material")
     return {
         "id": material.id,
         "title": material.title,
@@ -441,10 +651,42 @@ def get_material(material_id: int, db: Session = Depends(get_db), user: User = D
         "quiz_json": material.quiz_json,
         "raw_text": material.raw_text,
         "classroom_id": material.classroom_id,
+        "file_path": material.file_path,
     }
 
 
 # --- Assignments ---
+
+def _normalize_quiz_json(raw: str) -> str:
+    """Parse quiz JSON, keep only valid question objects (up to 15), re-serialize. Raises ValueError if invalid."""
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError as e:
+        raise ValueError(f"Invalid quiz JSON (quiz may have been truncated during generation): {e}")
+    if not isinstance(data, list):
+        raise ValueError("Quiz must be a JSON array of questions")
+    out = []
+    for i, item in enumerate(data):
+        if i >= 15:
+            break
+        if not isinstance(item, dict):
+            continue
+        q = item.get("question")
+        opts = item.get("options")
+        ca = item.get("correct_answer")
+        if not q or not isinstance(opts, list) or len(opts) != 4:
+            continue
+        try:
+            idx = int(ca) if isinstance(ca, int) else int(ca)
+        except (TypeError, ValueError):
+            continue
+        if idx < 0 or idx > 3:
+            continue
+        out.append({"question": str(q)[:2000], "options": [str(o)[:500] for o in opts], "correct_answer": idx})
+    if not out:
+        raise ValueError("No valid questions found in quiz (quiz may have been truncated). Try generating again or use a shorter material.")
+    return json.dumps(out)
+
 
 @app.post("/assignments", dependencies=[Depends(get_current_user)])
 def create_assignment(req: AssignmentCreate, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
@@ -453,9 +695,13 @@ def create_assignment(req: AssignmentCreate, db: Session = Depends(get_db), user
     classroom = db.query(Classroom).filter(Classroom.id == req.classroom_id, Classroom.teacher_id == user.id).first()
     if not classroom:
         raise HTTPException(404, "Classroom not found")
+    try:
+        quiz_json = _normalize_quiz_json(req.quiz_json)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
     assignment = Assignment(
         title=req.title,
-        quiz_json=req.quiz_json,
+        quiz_json=quiz_json,
         classroom_id=req.classroom_id,
         material_id=req.material_id,
     )
@@ -466,23 +712,49 @@ def create_assignment(req: AssignmentCreate, db: Session = Depends(get_db), user
 
 
 @app.get("/assignments", dependencies=[Depends(get_current_user)])
-def list_assignments(classroom_id: Optional[int] = None, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+def list_assignments(
+    classroom_id: Optional[int] = None,
+    skip: int = 0,
+    limit: int = 50,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user)
+):
+    """
+    List assignments with pagination.
+
+    Args:
+        classroom_id: Filter by classroom (optional)
+        skip: Number of items to skip (offset)
+        limit: Maximum items to return (default 50, max 200)
+
+    Returns:
+        {"items": [...], "total": N, "skip": N, "limit": N}
+    """
+    # Validate pagination params
+    limit = min(max(1, limit), 200)
+    skip = max(0, skip)
+
     if user.role == "teacher":
         q = db.query(Assignment)
         if classroom_id:
             q = q.filter(Assignment.classroom_id == classroom_id)
-        assignments = q.order_by(Assignment.created_at.desc()).all()
     else:
         enrollments = db.query(ClassroomEnrollment).filter(ClassroomEnrollment.user_id == user.id).all()
         room_ids = [e.classroom_id for e in enrollments]
         q = db.query(Assignment).filter(Assignment.classroom_id.in_(room_ids))
         if classroom_id:
             q = q.filter(Assignment.classroom_id == classroom_id)
-        assignments = q.order_by(Assignment.created_at.desc()).all()
+
+    # Get total count before pagination
+    total = q.count()
+
+    # Apply pagination
+    assignments = q.order_by(Assignment.created_at.desc()).offset(skip).limit(limit).all()
 
     result = []
     for a in assignments:
-        submissions = db.query(QuizSubmission).filter(QuizSubmission.assignment_id == a.id).all()
+        # Use count() instead of fetching all submissions (more efficient)
+        submission_count = db.query(QuizSubmission).filter(QuizSubmission.assignment_id == a.id).count()
         my_sub = db.query(QuizSubmission).filter(
             QuizSubmission.assignment_id == a.id,
             QuizSubmission.user_id == user.id,
@@ -493,10 +765,10 @@ def list_assignments(classroom_id: Optional[int] = None, db: Session = Depends(g
             "quiz_json": a.quiz_json,
             "classroom_id": a.classroom_id,
             "created_at": a.created_at.isoformat() if a.created_at else None,
-            "submission_count": len(submissions),
+            "submission_count": submission_count,
             "my_score": my_sub.score if my_sub else None,
         })
-    return result
+    return {"items": result, "total": total, "skip": skip, "limit": limit}
 
 
 @app.get("/assignments/{assignment_id}", dependencies=[Depends(get_current_user)])
@@ -703,6 +975,59 @@ def get_assignment_submissions(assignment_id: int, db: Session = Depends(get_db)
 
 # --- Analytics ---
 
+RESEARCH_DATA_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "research_data")
+ATTENTION_LOG_PATH = os.path.join(RESEARCH_DATA_DIR, "attention_log.csv")
+
+
+def _append_attention_log(
+    timestamp: int, student_id: str, yaw: float, pitch: float, roll: float, attention_state: int,
+    assignment_id: Optional[int] = None,
+    timestamp_iso: Optional[str] = None,
+):
+    """Append one row to attention_log.csv. Header written on first write.
+    Uses timestamp_iso for alignment with engagement_metrics.jsonl (multimodal correlation)."""
+    os.makedirs(RESEARCH_DATA_DIR, exist_ok=True)
+    file_exists = os.path.isfile(ATTENTION_LOG_PATH)
+    aid = "" if assignment_id is None else str(assignment_id)
+    ts_iso = timestamp_iso or datetime.utcnow().isoformat() + "Z"
+
+    # Check if existing file has new format (timestamp_iso column)
+    use_new_format = True
+    if file_exists:
+        with open(ATTENTION_LOG_PATH, "r") as f:
+            first_line = f.readline()
+        use_new_format = "timestamp_iso" in first_line
+
+    with open(ATTENTION_LOG_PATH, "a") as f:
+        if not file_exists:
+            f.write("timestamp,timestamp_iso,student_id,yaw,pitch,roll,attention_state,assignment_id\n")
+        if use_new_format:
+            f.write(f"{timestamp},{ts_iso},{student_id},{yaw},{pitch},{roll},{attention_state},{aid}\n")
+        else:
+            # Backward compat: old 7-column format
+            f.write(f"{timestamp},{student_id},{yaw},{pitch},{roll},{attention_state},{aid}\n")
+
+
+@app.post("/analyze-attention")
+def analyze_attention(req: AnalyzeAttentionRequest):
+    """
+    Vision-based attention: head pose (yaw/pitch) from camera image.
+    Fire-and-forget: logs to CSV for research. CPU-only (MediaPipe).
+    Uses Moving Average smoothing when student_id is provided.
+    """
+    result = estimate_pose(req.image, student_id=req.student_id)
+    yaw = result["yaw"]
+    pitch = result["pitch"]
+    roll = result["roll"]
+    attention_state = 1 if result["attention_score"] == 100 else 0
+    timestamp_iso = datetime.utcnow().isoformat() + "Z"
+    _append_attention_log(
+        req.timestamp, req.student_id, yaw, pitch, roll, attention_state, req.assignment_id,
+        timestamp_iso=timestamp_iso,
+    )
+    return {"ok": True}
+
+
 @app.post("/submit-analytics", dependencies=[Depends(get_current_user)])
 def submit_analytics(req: SubmitAnalyticsRequest, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
     """Receive raw scroll signal from client, compute engagement score using DSP, save to LearningSession."""
@@ -717,6 +1042,7 @@ def submit_analytics(req: SubmitAnalyticsRequest, db: Session = Depends(get_db),
     )
     db.add(session)
     db.commit()
+    db.refresh(session)
     
     # Log engagement metrics for research paper
     log_engagement_metrics(
@@ -727,10 +1053,11 @@ def submit_analytics(req: SubmitAnalyticsRequest, db: Session = Depends(get_db),
         session_duration_s=len(req.scroll_signal)  # 1 sample per second
     )
     
-    # Return score and DSP metrics for research/debugging
+    # Return score, DSP metrics, and session ID for research/debugging
     return {
         "engagement_score": engagement_score,
-        "dsp_metrics": dsp_metrics  # Includes FFT, ZCR, energy, etc.
+        "dsp_metrics": dsp_metrics,  # Includes FFT, ZCR, energy, etc.
+        "session_id": session.id,
     }
 
 
@@ -769,3 +1096,11 @@ def get_research_metrics_summary():
     Returns inference times, engagement metrics, and system statistics.
     """
     return get_metrics_summary()
+
+
+# --- Entry Point (convenience: `python main.py` binds to 0.0.0.0 for LAN access) ---
+
+if __name__ == "__main__":
+    import uvicorn
+
+    uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)

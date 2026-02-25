@@ -4,11 +4,21 @@ EduSync is a Learning Management System with an AI pipeline that generates quizz
 
 ## ECE Final Year Project (12 Credits)
 
-This project serves as a 12-credit BTech ECE final year project. It includes:
+This project serves as a 12-credit BTech ECE final year project. **Technical highlights:**
 
-- **DSP-based engagement detection:** Scroll behavior is sampled at 1 Hz and processed using FIR low-pass filtering, signal energy, zero-crossing rate (ZCR), and FFT-based spectral analysis to compute an engagement score (see `backend/signal_processor.py`).
-- **Research data:** Inference and engagement metrics are logged to `backend/research_data/` (JSONL). Use `GET /research/metrics-summary` for aggregated stats.
-- **Project report:** Full abstract, system architecture, methodology, and results template are in [docs/PROJECT_REPORT.md](docs/PROJECT_REPORT.md).
+- **Vision-based attention monitoring:** Head pose (yaw/pitch) via MediaPipe Face Mesh and cv2.solvePnP. Moving Average filter (last 10 frames) smooths angles before thresholding to reduce jitter. See `backend/vision_service.py`.
+- **DSP-based scroll engagement:** FIR filter, energy, ZCR, FFT on scroll velocity (1 Hz). Scroll Engagement Score (0–100) for multimodal research. See `backend/signal_processor.py`.
+- **Multimodal engagement tracking:** Vision data in `attention_log.csv` and scroll data in `engagement_metrics.jsonl` can be correlated by `student_id`/`user_id` and time for thesis analysis.
+- **Project report:** Abstract, architecture, methodology, and results in [docs/PROJECT_REPORT.md](docs/PROJECT_REPORT.md).
+
+### Research & evaluation
+
+Two main objectives for the capstone and conference paper:
+
+1. **Objective 1 — Edge AI performance and vision-based attention:** Demonstrate measurable inference performance (latency, throughput) for OCR and LLM operations, and vision-based head-pose attention monitoring with summary statistics and time-series/distribution figures.
+2. **Objective 2 — Multimodal engagement and correlation with quiz performance:** Demonstrate that scroll-based engagement (DSP) and vision-based attention correlate with quiz score across users/sessions, with scatter plots and Pearson correlation.
+
+**Synthetic data:** For evaluation when multi-user testing is not feasible, run `backend/scripts/generate_synthetic_research_data.py` (seed 42), then `export_research_csv.py`, `analyze_attention.py`, and `visualize_research_data.py`. See [docs/PROJECT_REPORT.md](docs/PROJECT_REPORT.md) and [docs/RESEARCH_PAPER_BRIEF.md](docs/RESEARCH_PAPER_BRIEF.md) for data collection and paper context.
 
 ## Features
 
@@ -22,6 +32,7 @@ This project serves as a 12-credit BTech ECE final year project. It includes:
   - View study materials from teachers
   - AI summary and flashcards for each material
   - Take quiz assignments and see scores
+  - Real-time head pose attention tracking during quizzes (CPU-only vision, GPU reserved for Llama-3)
 
 - **Core AI Pipeline** (preserved)
   - Llama-3 on GPU for quiz/summary/flashcard generation
@@ -35,10 +46,12 @@ EduSync/
 │   ├── main.py       # REST API
 │   ├── llm_service.py    # Llama-3 (quiz, summary, flashcards)
 │   ├── parser_service.py # OCR (EasyOCR, pypdf)
+│   ├── vision_service.py # Head pose (MediaPipe + cv2.solvePnP)
 │   ├── database.py      # SQLite models
 │   └── auth.py          # Auth utilities
 └── EduSyncApp/       # Expo/React Native frontend
     ├── app/          # Screens (expo-router)
+    ├── components/   # AttentionTracker, etc.
     ├── lib/          # API client, config
     └── context/      # AuthContext
 ```
@@ -99,7 +112,8 @@ EduSync/
 | `/materials` | GET/POST | List/create materials |
 | `/assignments` | GET/POST | List/create assignments |
 | `/assignments/{id}/submit` | POST | Submit quiz |
-| `/submit-analytics` | POST | Submit scroll signal, get engagement score |
+| `/analyze-attention` | POST | Submit base64 image for head pose attention (fire-and-forget) |
+| `/submit-analytics` | POST | Submit scroll signal, get engagement score (legacy) |
 | `/teacher/dashboard-stats` | GET | Aggregate engagement and quiz stats (teacher) |
 | `/research/metrics-summary` | GET | Aggregated inference and engagement metrics (for report) |
 

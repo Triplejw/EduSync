@@ -3,73 +3,104 @@
 ## BTech ECE Final Year Project (12 Credits)
 
 **Suggested Research Paper Title:**  
-*Edge AI-Powered Learning Analytics: A Digital Signal Processing Approach for Real-Time Student Engagement Detection*
+*Edge AI-Powered Learning Analytics: Vision-Based Attention and Multimodal Engagement*
+
+**Research objectives:**
+
+1. **Objective 1 — Edge AI performance and vision-based attention:** Demonstrate that an edge-deployed LMS achieves measurable inference performance (latency, throughput) for OCR and LLM operations, and vision-based head-pose attention monitoring with stable yaw/pitch/roll and binary attention state, with summary statistics and time-series/distribution figures.
+2. **Objective 2 — Multimodal engagement and correlation with quiz performance:** Demonstrate that scroll-based engagement (DSP) and vision-based attention (focused ratio) correlate with quiz score across multiple users/sessions, with scatter plots and Pearson correlation (N sufficient for a short conference paper).
 
 ---
 
 ## Abstract
 
-EduSync is an AI-enhanced Learning Management System designed to run on an edge node (local server or laptop) rather than in the cloud. The system uses a dual-model architecture: a CPU-bound OCR engine (EasyOCR/PyPDF2) for extracting text from study materials, and a GPU-bound Large Language Model (Llama-3) for generating summaries, flashcards, and quizzes. Student engagement is inferred from scroll behavior using digital signal processing: the scroll delta is treated as a discrete-time signal sampled at 1 Hz, and engagement is estimated via FIR low-pass filtering, signal energy, zero-crossing rate, and FFT-based spectral analysis. All processing is performed locally, reducing latency and preserving privacy. This report describes the system architecture, the DSP-based engagement detection methodology, and presents results for inference performance and engagement metrics.
+EduSync is an AI-enhanced Learning Management System designed to run on an edge node (local server or laptop) rather than in the cloud. The system uses a dual-model architecture: a CPU-bound OCR engine (EasyOCR/PyPDF2) for extracting text from study materials, and a GPU-bound Large Language Model (Llama-3) for generating summaries, flashcards, and quizzes. Student attention during quizzes is quantified using vision-based head pose estimation: the device camera captures frames at 2 Hz, and head orientation (yaw, pitch, roll) is computed via MediaPipe Face Mesh and cv2.solvePnP. The vision pipeline runs on CPU to leave the GPU free for Llama-3. Attention is scored from head stability (e.g., abs(yaw) > 20° or abs(pitch) > 15° indicates distraction). Scroll engagement during material viewing is quantified via DSP (FIR, energy, ZCR) into a Scroll Engagement Score (0–100). All processing is performed locally, reducing latency and ensuring data locality. This report describes the system architecture, the vision-based attention and DSP engagement methodology, and presents results for inference performance, attention metrics, and correlation of engagement/attention with quiz scores.
 
 ---
 
 ## System Architecture
 
 ```mermaid
-flowchart LR
+flowchart TB
   subgraph client [Mobile Client]
     App[Expo App]
-    Scroll[Scroll Tracker 1Hz]
-    App --> Scroll
+    AT[AttentionTracker]
+    ST[ScrollTracker]
+    Cam[Camera 2Hz]
+    App --> AT
+    App --> ST
+    AT --> Cam
   end
 
   subgraph edge [Edge Node]
     API[FastAPI]
     OCR[OCR CPU]
     LLM[LLM GPU]
-    DSP[Signal Processor]
+    VS[Vision Service CPU]
+    SP[signal_processor]
     DB[(SQLite)]
+    AL[attention_log.csv]
+    EM[engagement_metrics.jsonl]
     API --> OCR
     API --> LLM
-    API --> DSP
+    API --> VS
+    API --> SP
     API --> DB
+    VS --> AL
+    SP --> EM
   end
 
   client -->|REST| edge
-  Scroll -->|scroll_signal| API
-  DSP -->|engagement_score plus metrics| DB
+  AT -->|base64 image| API
+  ST -->|scroll_signal| API
 ```
 
 **Pipelines:**
 
 1. **Material pipeline:** Teacher uploads PDF/image → OCR extracts text → stored in DB; same text is sent to LLM for summary, flashcards, and quiz generation.
 2. **Intelligence pipeline:** Extracted text → Llama-3 (GPU) → JSON/summary output; metrics (inference time, input/output size) are logged for research.
-3. **Analytics pipeline:** Mobile app samples scroll delta at 1 Hz → raw signal sent to backend → DSP module computes engagement score and metrics (energy, ZCR, FFT, reading ratio) → stored in `LearningSession` and logged for research.
+3. **Attention pipeline (vision):** During quizzes, camera captures frames at 2 Hz → Vision Service (MediaPipe + solvePnP + Moving Average smoothing) → `attention_log.csv`.
+4. **Scroll pipeline (behavior):** During material viewing, scroll tracked at 1 Hz → DSP (FIR, ZCR, FFT) → Scroll Engagement Score → `engagement_metrics.jsonl`.
 
 ---
 
 ## Methodology
 
-### Signal Model
+### Vision Model
 
-- **Discrete-time signal:** Scroll delta (pixels moved per second) is sampled once per second on the client, yielding a sequence \( x[n] \) with sampling frequency \( f_s = 1 \) Hz.
-- **Units:** Each sample is in pixels per second (px/s), representing instantaneous scroll activity.
+- **Input:** Base64-encoded camera frame from front-facing camera, captured every 2 seconds during quiz.
+- **Face detection:** MediaPipe Face Mesh with `min_detection_confidence=0.5` (CPU-only).
 
-### DSP Steps (Engagement Detection)
+### Vision Steps (Attention Detection)
 
-1. **FIR low-pass filter:** A 5-tap moving-average filter smooths the raw signal to reduce noise and short spikes; filtered signal is used for reading-band detection.
-2. **Signal energy:** \( E = \frac{1}{N} \sum_n x[n]^2 \) (normalized by length); used as an activity-level feature.
-3. **Zero-crossing rate (ZCR):** Rate of sign changes around the mean; high ZCR suggests oscillating (active) scrolling, low ZCR suggests idle or steady scroll.
-4. **FFT / dominant frequency:** Magnitude spectrum of \( x[n] \); dominant frequency (excluding DC) characterizes periodic components in scroll behavior.
-5. **Reading band:** Filtered signal in the range 5–100 px/s is classified as “reading”; below 5 px/s as “idle,” above 100 px/s as “skimming.” The fraction of samples in the reading band is the *reading ratio*.
-6. **Score formula:** Engagement score (0–100) is a weighted combination of reading ratio (base), normalized energy (bonus), and ZCR-based activity term; details are in `backend/signal_processor.py`.
+1. **2D face landmarks:** Extract nose tip, chin, left/right eye corners, and mouth corners from MediaPipe.
+2. **3D face model:** Map 2D image points to a generic 3D face model (canonical coordinates).
+3. **solvePnP:** Use `cv2.solvePnP` to estimate rotation vector from 2D–3D point correspondences.
+4. **Euler angles:** Convert rotation vector to yaw, pitch, roll (degrees).
+5. **Moving Average smoothing:** A per-student buffer stores the last N frames (default 10) of yaw and pitch. The threshold is applied to the *averaged* values, reducing false positives from single-frame noise.
+6. **Attention rule:** If \( |\text{yaw}_{avg}| > 20° \) or \( |\text{pitch}_{avg}| > 15° \), then attention_state = 0 (distracted); else attention_state = 1 (focused).
+7. **Data logging:** Each sample appended to `attention_log.csv` with `timestamp`, `timestamp_iso`, `student_id`, `yaw`, `pitch`, `roll`, `attention_state`, `assignment_id`.
+
+### Multimodal Engagement Tracking (Vision + Behavior)
+
+EduSync tracks engagement from two modalities:
+- **Vision:** Head pose during quizzes → `attention_log.csv` (smoothed yaw/pitch, attention_state).
+- **Behavior:** Scroll velocity during material viewing → DSP pipeline (FIR filter, energy, ZCR, FFT) → Scroll Engagement Score (0–100) → `engagement_metrics.jsonl`.
+
+Both logs include timestamps and user identifiers (`student_id` / `user_id`) for side-by-side correlation analysis in research.
 
 ### Edge vs Cloud (Qualitative)
 
 - **Latency:** Edge inference avoids round-trip to cloud; suitable for interactive quiz/summary generation.
-- **Privacy:** User content and scroll signals stay on the edge node.
+- **Data Locality:** User content and camera frames stay on the edge node.
 - **Cost:** No per-request API cost; hardware (GPU) is one-time.
 - **Scope:** This report does not implement a cloud baseline; comparison with cloud APIs can be discussed qualitatively or added in future work.
+
+---
+
+## Data collection / evaluation data
+
+Metrics are collected from real app usage (inference, attention, scroll engagement). For scalable evaluation and conference paper results when multi-user testing is not feasible, **synthetic multi-user data** can be generated: run `backend/scripts/generate_synthetic_research_data.py` (reproducible with **seed 42**). This script seeds the DB with synthetic users, classrooms, materials, assignments, and quiz submissions, and overwrites `backend/research_data/attention_log.csv` and `backend/research_data/engagement_metrics.jsonl` with data designed so engagement and attention correlate with quiz score. Then run `export_research_csv.py`, `analyze_attention.py`, and `visualize_research_data.py` to produce CSVs and figures. Optionally backup `research_data/` and `edusync.db` before generating synthetic data.
 
 ---
 
@@ -77,7 +108,7 @@ flowchart LR
 
 ### Table 1: Inference Performance (Edge AI)
 
-*(Fill using exported data from `backend/research_data/` after running the system. Use `backend/scripts/export_research_csv.py` to generate `inference_metrics.csv`.)*
+Fill from `backend/research_data/inference_metrics.csv` (or aggregate from `inference_metrics.jsonl`). Export: `backend/scripts/export_research_csv.py`. Latency percentiles: `backend/research_data/latency_percentiles.csv`.
 
 | Operation   | Count | Avg duration (ms) | Avg input (chars) | Avg output (chars) | Chars/s |
 |------------|-------|-------------------|-------------------|--------------------|--------|
@@ -86,22 +117,27 @@ flowchart LR
 | Flashcards | …     | …                 | …                 | …                  | …      |
 | Quiz       | …     | …                 | …                 | …                  | …      |
 
-### Table 2: Engagement Metrics (DSP)
+### Table 2: Attention Metrics (Vision)
 
-*(Fill using `engagement_metrics.csv` from the export script.)*
+Fill from `backend/research_data/attention_log.csv`; summary stats are printed by `backend/scripts/analyze_attention.py` and written to `attention_summary.csv`.
 
-| Metric          | Mean | Std | Min | Max |
-|-----------------|------|-----|-----|-----|
-| Engagement score| …    | …   | …   | …   |
-| Reading ratio   | …    | …   | …   | …   |
-| Energy          | …    | …   | …   | …   |
-| ZCR             | …    | …   | …   | …   |
-| Dominant freq (Hz) | … | …   | …   | …   |
+| Metric         | Mean | Std | Min | Max |
+|----------------|------|-----|-----|-----|
+| Yaw (deg)      | …    | …   | …   | …   |
+| Pitch (deg)    | …    | …   | …   | …   |
+| Roll (deg)     | …    | …   | …   | …   |
+| Focused ratio  | …    | …   | …   | …   |
 
-### Figures (Optional)
+### Figures
 
-- **Signal waveform:** Plot of a sample scroll signal \( x[n] \) (time vs px/s).
-- **FFT magnitude:** One-sided magnitude spectrum for the same signal, showing dominant frequency.
+All figures are generated in `backend/research_data/figures/` by `backend/scripts/visualize_research_data.py`:
+
+- **engagement_vs_quiz_scatter.png** — Scatter: avg engagement score vs quiz score, with linear fit and Pearson r.
+- **engagement_distribution.png** — Histogram of engagement scores (sessions).
+- **latency_by_operation.png** — Bar chart of latency (avg/p50) per operation.
+- **attention_timeseries.png** — Yaw and pitch vs time for a sample quiz session.
+- **attention_distribution.png** — Histograms of yaw, pitch, focused ratio per student, and attention state counts.
+- **attention_vs_quiz_scatter.png** — Scatter: focused ratio vs quiz score, with linear fit and Pearson r.
 
 ---
 
@@ -109,15 +145,15 @@ flowchart LR
 
 1. Learning Analytics: review of literature (e.g., Siemens & Long, 2011; or institution-provided survey).
 2. Edge AI / on-device inference: survey or industry report on edge ML.
-3. Digital signal processing: standard textbook (e.g., Oppenheim & Schafer) for FIR, FFT, ZCR.
-4. HCI / scroll-based behavior: papers on scroll or reading behavior detection if used.
+3. Head pose estimation: MediaPipe Face Mesh, solvePnP / PnP problem references.
+4. Attention monitoring: papers on vision-based engagement or focus detection.
 5. Llama / open-weight LLMs: Meta Llama model card or relevant technical report.
 
 ---
 
 ## Repository Notes
 
-- **Backend:** `backend/` (FastAPI, LLM, OCR, DSP, metrics logging).
-- **Frontend:** `EduSyncApp/` (Expo/React Native, scroll tracker at 1 Hz).
-- **Research data:** `backend/research_data/` (JSONL); export to CSV via `backend/scripts/export_research_csv.py`.
-- **API:** `GET /research/metrics-summary` returns aggregated inference and engagement stats.
+- **Backend:** `backend/` (FastAPI, LLM, OCR, Vision Service, metrics logging).
+- **Frontend:** `EduSyncApp/` (Expo/React Native, AttentionTracker during quizzes).
+- **Research data:** `backend/research_data/` (JSONL, `attention_log.csv`); export to CSV via `backend/scripts/export_research_csv.py`.
+- **API:** `GET /research/metrics-summary` returns aggregated inference stats; `POST /analyze-attention` receives camera frames and logs to `attention_log.csv`.

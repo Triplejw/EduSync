@@ -125,14 +125,14 @@ export async function generateMaterialFlashcards(id: number) {
 
 /** Generate quiz for material on-demand */
 export async function generateMaterialQuiz(id: number) {
-  const { data } = await api.post(`/materials/${id}/generate-quiz`, {}, { timeout: 120000 });
+  const { data } = await api.post(`/materials/${id}/generate-quiz`, {}, { timeout: 300000 }); // 5 min for 15 questions on edge GPU
   return data;
 }
 
 export async function listMaterials(classroom_id?: number) {
   const url = classroom_id ? `/materials?classroom_id=${classroom_id}` : '/materials';
   const { data } = await api.get(url);
-  return data;
+  return Array.isArray(data) ? data : (data?.items ?? []);
 }
 
 export async function getMaterial(id: number) {
@@ -154,7 +154,7 @@ export async function createAssignment(payload: {
 export async function listAssignments(classroom_id?: number) {
   const url = classroom_id ? `/assignments?classroom_id=${classroom_id}` : '/assignments';
   const { data } = await api.get(url);
-  return data;
+  return Array.isArray(data) ? data : (data?.items ?? []);
 }
 
 export async function getAssignment(id: number) {
@@ -195,6 +195,27 @@ export async function checkBackendHealth(): Promise<boolean> {
 }
 
 // Analytics
+/** Submit camera frame for vision-based attention analysis (head pose). Returns attention result. */
+export async function submitAttention(
+  imageBase64: string,
+  studentId: string,
+  timestamp: number,
+  assignmentId?: number
+): Promise<{ ok: boolean; attention_score?: number } | null> {
+  const payload: { image: string; student_id: string; timestamp: number; assignment_id?: number } = {
+    image: imageBase64,
+    student_id: studentId,
+    timestamp,
+  };
+  if (assignmentId != null) payload.assignment_id = assignmentId;
+  try {
+    const { data } = await api.post('/analyze-attention', payload);
+    return data;
+  } catch {
+    return null;
+  }
+}
+
 export async function submitAnalytics(materialId: number, scrollSignal: number[]) {
   const { data } = await api.post('/submit-analytics', {
     material_id: materialId,

@@ -2,6 +2,9 @@ import easyocr
 import numpy as np
 from PIL import Image
 import io
+import os
+import subprocess
+import tempfile
 from pdf2image import convert_from_bytes
 from pydantic import BaseModel
 import pypdf
@@ -67,3 +70,46 @@ def extract_text_from_image(file_bytes):
     except Exception as e:
         print(f"❌ OCR Error: {e}")
         return ""
+
+
+def extract_text_from_ppt(file_bytes, file_ext):
+    """Convert PPT/PPTX to PDF and run existing OCR pipeline."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        input_path = os.path.join(tmpdir, f"input{file_ext}")
+        with open(input_path, "wb") as f:
+            f.write(file_bytes)
+
+        cmd = [
+            "soffice",
+            "--headless",
+            "--convert-to",
+            "pdf",
+            "--outdir",
+            tmpdir,
+            input_path,
+        ]
+        result = subprocess.run(cmd, capture_output=True)
+        if result.returncode != 0:
+            stderr = result.stderr.decode("utf-8", errors="ignore")
+            raise RuntimeError(f"PPT conversion failed. Ensure LibreOffice is installed. {stderr}")
+
+        expected_pdf = os.path.splitext(input_path)[0] + ".pdf"
+        pdf_path = expected_pdf if os.path.exists(expected_pdf) else None
+        if not pdf_path:
+            for name in os.listdir(tmpdir):
+                if name.lower().endswith(".pdf"):
+                    pdf_path = os.path.join(tmpdir, name)
+                    break
+        if not pdf_path:
+            raise RuntimeError("PPT conversion failed: PDF not found.")
+
+        with open(pdf_path, "rb") as pdf_file:
+            pdf_bytes = pdf_file.read()
+        return extract_text_from_image(pdf_bytes)
+
+
+def extract_text_from_document(file_bytes, file_ext=None):
+    ext = (file_ext or "").lower()
+    if ext in [".ppt", ".pptx"]:
+        return extract_text_from_ppt(file_bytes, ext)
+    return extract_text_from_image(file_bytes)

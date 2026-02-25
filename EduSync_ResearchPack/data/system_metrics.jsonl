@@ -1,0 +1,6 @@
+{"timestamp": "2026-02-14T10:07:56.108172", "event": "model_load", "model_load_time_ms": 3008.759155000007}
+{"timestamp": "2026-02-14T10:17:35.009170", "event": "model_load", "model_load_time_ms": 1453.8836289999608}
+{"timestamp": "2026-02-15T14:11:42.215919", "event": "model_load", "model_load_time_ms": 5991.784068000015}
+{"timestamp": "2026-02-15T14:14:32.596135", "event": "model_load", "model_load_time_ms": 3640.4492349993234}
+{"timestamp": "2026-02-15T14:21:00.560446", "event": "model_load", "model_load_time_ms": 2720.163464000507}
+{"timestamp": "2026-02-15T14:27:03.796218", "event": "model_load", "model_load_time_ms": 2317.254208999657}

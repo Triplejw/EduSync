@@ -15,19 +15,20 @@ def get_model_load_time_ms():
 
 print(f"Loading LLM from: {MODEL_PATH}")
 
-# 2. Initialize Model (Global Variable) - Optimized for Edge Performance
+# 2. Initialize Model (Global Variable) - Optimized for RTX 3060 6GB + Ryzen 7 5800H
 try:
     _start = time.perf_counter()
     llm = Llama(
         model_path=MODEL_PATH,
-        n_gpu_layers=-1,      # All layers on GPU
-        n_ctx=4096,           # Context window
-        n_threads=6,          # CPU threads for non-GPU operations
-        n_batch=512,          # Batch size for faster prompt processing
+        n_gpu_layers=-1,      # All layers on GPU (RTX 3060 6GB can handle 8B Q4 model)
+        n_ctx=4096,           # Context window (can increase to 8192 if needed)
+        n_threads=8,          # Match Ryzen 7 5800H core count for parallel CPU ops
+        n_batch=512,          # Optimal batch size for prompt processing
+        use_mlock=True,       # Lock model in RAM to prevent swapping
         verbose=False         # Disable verbose logging for performance
     )
     model_load_time_ms = (time.perf_counter() - _start) * 1000
-    print(f"✅ Llama-3 Loaded on GPU (Optimized: n_threads=6, n_batch=512) in {model_load_time_ms:.0f} ms")
+    print(f"✅ Llama-3 8B Loaded on GPU (n_threads=8, n_batch=512, mlock=True) in {model_load_time_ms:.0f} ms")
     # Log for research paper (System Resource Utilization)
     try:
         from metrics_logger import log_system_metrics
@@ -39,33 +40,25 @@ except Exception as e:
     llm = None
 
 def generate_quiz(content_text):
+    """Generate 5 multiple-choice questions from the first 6000 chars (single call, fast on edge)."""
     if not llm:
         return "Error: AI Model not loaded."
 
-    # --- SAFETY TRUNCATION ---
-    # We lowered this slightly to 12,000 to keep the prompt evaluation faster
-    # and leave more room in the 4096 context window for the answer.
-    max_chars = 12000
+    # Truncate to 6000 chars so enough context remains for output
+    max_chars = 6000
     if len(content_text) > max_chars:
-        print(f"⚠️ Text too long ({len(content_text)} chars). Truncating to first {max_chars} chars.")
         content_text = content_text[:max_chars] + "... [Text Truncated]"
-    
-    # Updated prompt (Removed duplicate <|begin_of_text|>)
+
     prompt = f"""<|start_header_id|>system<|end_header_id|>
 
-You are a strict JSON generator. 
-Output exactly 3 valid JSON objects in a list based on the text provided.
-Do not include any text outside the JSON.
-Keys must be exactly: "question", "options", "correct_answer".
-"correct_answer" should be the index (0-3).
+You are a strict JSON generator. Output exactly 5 multiple-choice questions in a list based on the text provided.
+Do not include any text outside the JSON. Keys must be exactly: "question", "options", "correct_answer".
+"options" must be a list of 4 strings. "correct_answer" is the index (0-3).
 
-Example Format:
+Example format:
 [
-  {{
-    "question": "What is 2+2?",
-    "options": ["3", "4", "5", "6"],
-    "correct_answer": 1
-  }}
+  {{ "question": "What is 2+2?", "options": ["3", "4", "5", "6"], "correct_answer": 1 }},
+  {{ "question": "Next question?", "options": ["A", "B", "C", "D"], "correct_answer": 0 }}
 ]
 <|eot_id|><|start_header_id|>user<|end_header_id|>
 
@@ -74,12 +67,12 @@ Context: {content_text}
 
     output = llm(
         prompt,
-        max_tokens=512,
-        temperature=0.4,  # Reduced for more deterministic JSON output
+        max_tokens=512,  # Enough for 5 questions; keeps generation fast on edge
+        temperature=0.4,
         stop=["<|eot_id|>"],
-        echo=False
+        echo=False,
     )
-    return output['choices'][0]['text']
+    return output["choices"][0]["text"]
 
 
 def generate_summary(content_text):
@@ -87,14 +80,14 @@ def generate_summary(content_text):
     if not llm:
         return "Error: AI Model not loaded."
 
-    max_chars = 12000
+    max_chars = 8000  # Optimized for faster generation on edge hardware
     if len(content_text) > max_chars:
         content_text = content_text[:max_chars] + "... [Text Truncated]"
 
     prompt = f"""<|start_header_id|>system<|end_header_id|>
 
-You are an educational assistant. Summarize the following study material in 3-5 clear paragraphs. 
-Focus on key concepts, main ideas, and important details. Use simple, clear language.
+You are an educational assistant. Summarize the following study material as key bullet points that are easy to learn.
+Use concise bullet points only, not paragraphs. Cover main concepts and important details.
 <|eot_id|><|start_header_id|>user<|end_header_id|>
 
 {content_text}
@@ -109,7 +102,7 @@ def generate_flashcards(content_text):
     if not llm:
         return "[]"
 
-    max_chars = 12000
+    max_chars = 8000  # Optimized for faster generation on edge hardware
     if len(content_text) > max_chars:
         content_text = content_text[:max_chars] + "... [Text Truncated]"
 
