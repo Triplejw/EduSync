@@ -54,7 +54,7 @@ except ImportError:
 
 # Import centralized config (with fallback for standalone testing)
 try:
-    from config import dsp_config
+    from settings import dsp_config
     READING_LOWER_PX_S = dsp_config.reading_lower_px_s
     IDLE_MAX_PX_S = dsp_config.idle_max_px_s
     SKIMMING_LOWER_PX_S = dsp_config.skimming_lower_px_s

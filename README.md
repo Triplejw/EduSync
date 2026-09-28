@@ -28,7 +28,7 @@ EduSync is an edge-deployed Learning Management System built as a **BTech ECE Fi
 
 ### Why Edge AI?
 
-All AI processing happens on your local machine — OCR, quiz generation, attention analysis — ensuring **data sovereignty** and **zero cloud dependency**. The entire pipeline runs on consumer hardware (NVIDIA RTX 3060, 6GB VRAM).
+All AI processing happens on your local machine — OCR, quiz generation, attention analysis — ensuring **data sovereignty** and **zero cloud dependency**. The pipeline supports CUDA PCs and Apple Silicon Macs through `llama.cpp`.
 
 ---
 
@@ -57,7 +57,7 @@ All AI processing happens on your local machine — OCR, quiz generation, attent
 | Component | Technology | Purpose |
 |-----------|-----------|---------|
 | **Text Extraction** | EasyOCR (CPU) | OCR from PDFs, images, and slides |
-| **Content Generation** | Llama-3 8B, 4-bit quantized (GPU) | Quiz, summary, and flashcard generation |
+| **Content Generation** | Llama-3 8B, 4-bit quantized (CUDA or Metal) | Quiz, summary, and flashcard generation |
 | **Attention Monitoring** | MediaPipe Face Mesh + cv2.solvePnP (CPU) | Head pose estimation (yaw/pitch) during quizzes |
 | **Engagement Scoring** | FIR filter, ZCR, FFT (CPU) | DSP-based scroll behavior analysis |
 
@@ -149,10 +149,10 @@ EduSync/
 
 ### Prerequisites
 
-- **Python 3.10+** with pip
+- **Python 3.11** with pip
 - **Node.js 18+** with npm
-- **NVIDIA GPU** with CUDA (for Llama-3 inference)
-- **Expo Go** app on your phone ([iOS](https://apps.apple.com/app/expo-go/id982107779) / [Android](https://play.google.com/store/apps/details?id=host.exp.exponent))
+- An NVIDIA CUDA GPU or Apple Silicon Mac with Metal
+- **Expo Go SDK 54** on your phone ([iOS](https://apps.apple.com/app/expo-go/id982107779) / [Android](https://play.google.com/store/apps/details?id=host.exp.exponent))
 
 ### 1. Backend Setup
 
@@ -162,15 +162,42 @@ git clone https://github.com/Triplejw/EduSync.git
 cd EduSync/backend
 
 # Create virtual environment
-python -m venv venv
-source venv/bin/activate  # Windows: venv\Scripts\activate
+python3.11 -m venv .venv
+source .venv/bin/activate
 
 # Install dependencies
 pip install -r requirements.txt
 
+# Download the ~5 GB quantized model (requires Hugging Face access when gated)
+python download_models.py
+
+# Copy .env.example to a private shell/env manager and set EDUSYNC_JWT_SECRET
+# The GGUF and .env files are ignored by Git.
+
 # Start the server (bind to all interfaces for mobile access)
 uvicorn main:app --reload --host 0.0.0.0 --port 8000
 ```
+
+#### Apple Silicon / Metal setup
+
+On an M-series Mac, use a native arm64 terminal and run the project setup script from the repository root:
+
+```bash
+chmod +x scripts/setup_macos.sh
+./scripts/setup_macos.sh
+source .venv/bin/activate
+python backend/download_models.py
+```
+
+The script builds `llama-cpp-python` with Metal enabled using the official Apple Silicon CMake flags. Confirm readiness before the demo:
+
+```bash
+cd backend
+python preflight.py
+python preflight.py --load-llm
+```
+
+The API and `/health` start without loading the GGUF or EasyOCR. `/health/services` reports their current lazy-load status.
 
 ### 2. Frontend Setup
 
@@ -188,14 +215,28 @@ npx expo start
 
 1. Open **Expo Go** on your phone
 2. Scan the QR code from the terminal
-3. Configure the backend URL in `EduSyncApp/lib/config.ts`:
+3. Start Expo with the Mac's current Wi-Fi address (do not edit source code):
 
 ```typescript
-// Use your computer's local IP address
-const API_URL = 'http://192.168.x.x:8000';
+EXPO_PUBLIC_API_URL=http://192.168.x.x:8000 npx expo start --clear
 ```
 
-> **Tip:** Run `find_backend_ip.sh` to find your machine's IP address on the local network.
+> **Tip:** Run `./find_backend_ip.sh` from the project root. The Mac and iPhone must be on the same Wi-Fi network.
+
+### Runtime configuration
+
+| Variable | Purpose | Local default |
+|---|---|---|
+| `EDUSYNC_MODEL_PATH` | Path to the Llama 3 GGUF | `backend/models/Meta-Llama-3-8B-Instruct-Q4_K_M.gguf` |
+| `EDUSYNC_GPU_LAYERS` | Layers offloaded to CUDA/Metal | `-1` (all) |
+| `EDUSYNC_N_THREADS` | llama.cpp CPU threads | Up to 8 |
+| `EDUSYNC_N_BATCH` | Prompt processing batch size | `256` |
+| `EDUSYNC_N_CTX` | Maximum context tokens | `2048` |
+| `EDUSYNC_USE_MLOCK` | Lock model pages in RAM | `0` |
+| `EDUSYNC_CORS_ORIGINS` | Comma-separated browser origins | `*` in development |
+| `EDUSYNC_JWT_SECRET` | Stable signing secret | Random per restart if unset |
+| `EDUSYNC_CREATE_TEST_ACCOUNTS` | Create local demo accounts when `1` | Disabled |
+| `EXPO_PUBLIC_API_URL` | Backend URL embedded in the Expo client | localhost fallback |
 
 ---
 

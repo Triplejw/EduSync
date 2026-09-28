@@ -34,13 +34,11 @@ import time
 from collections import defaultdict
 from dataclasses import dataclass, field
 
-import cv2
 import numpy as np
-import mediapipe as mp
 
 # Import centralized config (with fallback for standalone testing)
 try:
-    from config import vision_config
+    from settings import vision_config
     YAW_THRESHOLD = vision_config.yaw_threshold
     PITCH_THRESHOLD = vision_config.pitch_threshold
     MA_BUFFER_SIZE = vision_config.ma_buffer_size
@@ -157,6 +155,8 @@ _head_pose_smoother = HeadPoseSmoother()
 
 def _rotation_vector_to_euler(rvec: np.ndarray) -> tuple[float, float, float]:
     """Convert OpenCV rotation vector to Euler angles (yaw, pitch, roll) in degrees."""
+    import cv2
+
     rmat, _ = cv2.Rodrigues(rvec)
     # Extract Euler angles from rotation matrix
     # Convention: yaw (Y), pitch (X), roll (Z)
@@ -188,6 +188,12 @@ def estimate_pose(image_input: str | bytes, student_id: str | None = None) -> di
         When student_id is provided, yaw/pitch are smoothed values; raw_yaw/raw_pitch
         are also included for logging.
     """
+    try:
+        import cv2
+        import mediapipe as mp
+    except ImportError as exc:
+        raise RuntimeError(f"Vision dependencies are unavailable: {exc}") from exc
+
     # Decode image
     if isinstance(image_input, str):
         img_bytes = base64.b64decode(image_input)

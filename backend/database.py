@@ -1,10 +1,18 @@
+import os
+from pathlib import Path
+
 from sqlalchemy import create_engine, Column, Integer, String, ForeignKey, Float, Text, DateTime, Index
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker, relationship
 from datetime import datetime
 
-# SQLite Database (Simple, Single File)
-DATABASE_URL = "sqlite:///./edusync.db"
+# Keep the local database in one predictable place regardless of where uvicorn
+# is launched. Tests and advanced deployments can override it explicitly.
+PROJECT_DIR = Path(__file__).resolve().parent.parent
+DATABASE_URL = os.environ.get(
+    "EDUSYNC_DATABASE_URL",
+    f"sqlite:///{PROJECT_DIR / 'edusync.db'}",
+)
 engine = create_engine(DATABASE_URL, connect_args={"check_same_thread": False})
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()

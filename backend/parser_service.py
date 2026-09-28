@@ -1,115 +1,123 @@
-import easyocr
-import numpy as np
-from PIL import Image
+"""Document text extraction with lazy OCR initialization."""
+
 import io
 import os
 import subprocess
 import tempfile
-from pdf2image import convert_from_bytes
-from pydantic import BaseModel
-import pypdf
+import threading
+from pathlib import Path
 
-print("Loading EasyOCR on CPU...")
-# English only, lighter model
-reader = easyocr.Reader(['en'], gpu=False) 
-print("✅ EasyOCR Loaded on CPU")
+
+_reader = None
+_reader_error: str | None = None
+_reader_lock = threading.Lock()
+
+
+def get_ocr_status() -> dict:
+    """Return OCR readiness without downloading or loading OCR models."""
+    return {"loaded": _reader is not None, "load_error": _reader_error, "backend": "EasyOCR"}
+
+
+def get_ocr_reader():
+    """Initialize the shared English EasyOCR reader only when OCR is required."""
+    global _reader, _reader_error
+    if _reader is not None:
+        return _reader
+    with _reader_lock:
+        if _reader is not None:
+            return _reader
+        try:
+            import easyocr
+
+            model_dir = Path(
+                os.environ.get(
+                    "EDUSYNC_OCR_MODEL_DIR",
+                    Path(__file__).resolve().parent / "models" / "easyocr",
+                )
+            ).expanduser()
+            model_dir.mkdir(parents=True, exist_ok=True)
+            user_network_dir = model_dir / "user_network"
+            user_network_dir.mkdir(parents=True, exist_ok=True)
+            _reader = easyocr.Reader(
+                ["en"],
+                gpu=False,
+                model_storage_directory=str(model_dir),
+                user_network_directory=str(user_network_dir),
+            )
+            _reader_error = None
+            return _reader
+        except Exception as exc:
+            _reader_error = str(exc)
+            raise RuntimeError(f"EasyOCR failed to initialize: {exc}") from exc
+
 
 def extract_text_from_pdf_native(file_bytes):
-    """Try to read text directly (0.1s) instead of using OCR"""
+    """Read embedded PDF text before falling back to OCR."""
     try:
-        pdf_file = io.BytesIO(file_bytes)
-        reader_pdf = pypdf.PdfReader(pdf_file)
+        import pypdf
+
+        reader_pdf = pypdf.PdfReader(io.BytesIO(file_bytes))
         text = ""
-        # Read up to 10 pages max (fast enough)
-        max_pages = min(len(reader_pdf.pages), 10)
-        
-        for i in range(max_pages):
-            page_text = reader_pdf.pages[i].extract_text()
+        for page in reader_pdf.pages[:10]:
+            page_text = page.extract_text()
             if page_text:
                 text += page_text + "\n"
-        
-        # If we got a decent amount of text, return it
-        if len(text) > 500: 
+        if len(text) > 500:
             return text
-    except Exception as e:
-        print(f"Native extraction failed: {e}")
+    except Exception as exc:
+        print(f"Native extraction failed: {exc}")
     return None
 
-def extract_text_from_image(file_bytes):
-    text_content = []
-    
-    try:
-        # 1. FAST PATH: Try Native PDF Extraction first
-        if file_bytes.startswith(b'%PDF'):
-            print("📄 Detected PDF. Attempting Fast Extraction...")
-            native_text = extract_text_from_pdf_native(file_bytes)
-            if native_text:
-                print("⚡ Fast Extraction Success! Skipped OCR.")
-                return native_text
-            
-            print("⚠️ Fast Extraction failed (Scanned PDF?). Switching to OCR.")
-            # 2. SLOW PATH: OCR
-            # Only convert FIRST 5 PAGES to save time
-            # The LLM will truncate anyway, so page 35 is useless.
-            print("📸 Converting first 5 pages to images...")
-            images = convert_from_bytes(file_bytes, first_page=1, last_page=5)
-        else:
-            # Single Image
-            images = [Image.open(io.BytesIO(file_bytes)).convert("RGB")]
 
-        # Loop through images (Max 5)
-        for i, img in enumerate(images):
-            print(f"   👁️ OCR Processing page {i+1}/{len(images)}...")
-            image_np = np.array(img)
-            # detail=0 returns simple list of strings
-            result = reader.readtext(image_np, detail=0, paragraph=True)
-            text_content.append(" ".join(result))
-            
-        return "\n\n".join(text_content)
-        
-    except Exception as e:
-        print(f"❌ OCR Error: {e}")
-        return ""
+def extract_text_from_image(file_bytes):
+    """Extract text from an image or scanned PDF."""
+    from PIL import Image
+    import numpy as np
+
+    if file_bytes.startswith(b"%PDF"):
+        native_text = extract_text_from_pdf_native(file_bytes)
+        if native_text:
+            return native_text
+        from pdf2image import convert_from_bytes
+
+        images = convert_from_bytes(file_bytes, first_page=1, last_page=5)
+    else:
+        images = [Image.open(io.BytesIO(file_bytes)).convert("RGB")]
+
+    reader = get_ocr_reader()
+    text_content = []
+    for image in images:
+        result = reader.readtext(np.array(image), detail=0, paragraph=True)
+        text_content.append(" ".join(result))
+    return "\n\n".join(text_content)
 
 
 def extract_text_from_ppt(file_bytes, file_ext):
-    """Convert PPT/PPTX to PDF and run existing OCR pipeline."""
+    """Convert PPT/PPTX to PDF with LibreOffice, then extract its text."""
     with tempfile.TemporaryDirectory() as tmpdir:
         input_path = os.path.join(tmpdir, f"input{file_ext}")
-        with open(input_path, "wb") as f:
-            f.write(file_bytes)
-
-        cmd = [
-            "soffice",
-            "--headless",
-            "--convert-to",
-            "pdf",
-            "--outdir",
-            tmpdir,
-            input_path,
-        ]
-        result = subprocess.run(cmd, capture_output=True)
+        with open(input_path, "wb") as file_handle:
+            file_handle.write(file_bytes)
+        result = subprocess.run(
+            ["soffice", "--headless", "--convert-to", "pdf", "--outdir", tmpdir, input_path],
+            capture_output=True,
+        )
         if result.returncode != 0:
             stderr = result.stderr.decode("utf-8", errors="ignore")
-            raise RuntimeError(f"PPT conversion failed. Ensure LibreOffice is installed. {stderr}")
+            raise RuntimeError(f"PPT conversion failed. Install LibreOffice. {stderr}")
 
-        expected_pdf = os.path.splitext(input_path)[0] + ".pdf"
-        pdf_path = expected_pdf if os.path.exists(expected_pdf) else None
-        if not pdf_path:
-            for name in os.listdir(tmpdir):
-                if name.lower().endswith(".pdf"):
-                    pdf_path = os.path.join(tmpdir, name)
-                    break
-        if not pdf_path:
-            raise RuntimeError("PPT conversion failed: PDF not found.")
-
+        pdf_path = os.path.splitext(input_path)[0] + ".pdf"
+        if not os.path.exists(pdf_path):
+            candidates = [name for name in os.listdir(tmpdir) if name.lower().endswith(".pdf")]
+            if not candidates:
+                raise RuntimeError("PPT conversion failed: PDF not found.")
+            pdf_path = os.path.join(tmpdir, candidates[0])
         with open(pdf_path, "rb") as pdf_file:
-            pdf_bytes = pdf_file.read()
-        return extract_text_from_image(pdf_bytes)
+            return extract_text_from_image(pdf_file.read())
 
 
 def extract_text_from_document(file_bytes, file_ext=None):
     ext = (file_ext or "").lower()
-    if ext in [".ppt", ".pptx"]:
+    if ext in {".ppt", ".pptx"}:
         return extract_text_from_ppt(file_bytes, ext)
     return extract_text_from_image(file_bytes)

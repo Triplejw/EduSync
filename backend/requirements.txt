@@ -5,6 +5,7 @@ python-multipart>=0.0.6
 sqlalchemy>=2.0.0
 pydantic>=2.0.0
 passlib[bcrypt]>=1.7.4
+bcrypt==4.0.1  # passlib 1.7 compatibility
 python-jose[cryptography]>=3.3.0
 easyocr>=1.7.0
 numpy>=1.24.0,<2.0
@@ -12,10 +13,11 @@ scipy>=1.11.0
 Pillow>=10.0.0
 pdf2image>=1.16.0
 pypdf>=3.0.0
-llama-cpp-python>=0.2.0
+llama-cpp-python==0.3.35
+huggingface-hub>=0.24.0
 # Research visualization (scripts/visualize_research_data.py)
 matplotlib>=3.7.0
 pandas>=2.0.0
 # Vision-based attention (head pose via MediaPipe)
-mediapipe==0.10.9
+mediapipe==0.10.21  # Apple Silicon wheel with the legacy mp.solutions Face Mesh API
 opencv-python>=4.8.0

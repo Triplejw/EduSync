@@ -18,8 +18,8 @@ UPLOAD_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "uploads")
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 
 # Import our custom services
-from llm_service import generate_quiz, generate_summary, generate_flashcards
-from parser_service import extract_text_from_document
+from llm_service import generate_quiz, generate_summary, generate_flashcards, get_model_status
+from parser_service import extract_text_from_document, get_ocr_status
 from database import (
     SessionLocal,
     User,
@@ -177,6 +177,12 @@ def health():
     return {"status": "ok"}
 
 
+@app.get("/health/services")
+def health_services():
+    """Dependency status without loading the local model or OCR weights."""
+    return {"status": "ok", "llm": get_model_status(), "ocr": get_ocr_status()}
+
+
 # --- Auth ---
 
 @app.post("/register")
@@ -225,8 +231,19 @@ def login(req: LoginRequest, db: Session = Depends(get_db)):
 
 @app.post("/extract-text")
 async def extract_text(file: UploadFile = File(...)):
+    file_ext = (os.path.splitext(file.filename or "")[-1] or "").lower()
+    if file_ext not in UPLOAD_ALLOWED_EXTENSIONS:
+        raise HTTPException(
+            400,
+            f"Invalid file type '{file_ext}'. Allowed: {', '.join(sorted(UPLOAD_ALLOWED_EXTENSIONS))}",
+        )
     contents = await file.read()
-    extracted_text = extract_text_from_image(contents)
+    if len(contents) > UPLOAD_MAX_SIZE_BYTES:
+        raise HTTPException(400, f"File too large. Maximum: {UPLOAD_MAX_SIZE_MB}MB")
+    try:
+        extracted_text = extract_text_from_document(contents, file_ext)
+    except Exception as exc:
+        raise HTTPException(422, f"Text extraction failed: {exc}") from exc
     return {"extracted_text": extracted_text}
 
 

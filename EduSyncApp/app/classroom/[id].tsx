@@ -26,7 +26,7 @@ export default function ClassroomDetailScreen() {
   const [uploading, setUploading] = useState(false);
   const [status, setStatus] = useState('');
   const [elapsedTime, setElapsedTime] = useState(0);
-  const timerRef = useRef<NodeJS.Timeout | null>(null);
+  const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const classroomId = id ? parseInt(id, 10) : null;
   const isTeacher = user?.role === 'teacher';

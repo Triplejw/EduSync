@@ -1,23 +1,37 @@
-from huggingface_hub import hf_hub_download
+"""Download the approved quantized Llama 3 model into the Git-ignored model folder."""
+
+from pathlib import Path
 import os
+import shutil
 
-# Create models directory if not exists
-os.makedirs("models", exist_ok=True)
 
-print("Downloading Llama-3-8B (Quantized) - This is ~5GB...")
-# We use a GGUF format which is optimized for your 6GB VRAM
-hf_hub_download(
-    repo_id="bartowski/Meta-Llama-3-8B-Instruct-GGUF",
-    filename="Meta-Llama-3-8B-Instruct-Q4_K_M.gguf",
-    local_dir="models",
-    local_dir_use_symlinks=False
-)
-print("Llama-3 Downloaded!")
+REPO_ID = "bartowski/Meta-Llama-3-8B-Instruct-GGUF"
+FILENAME = "Meta-Llama-3-8B-Instruct-Q4_K_M.gguf"
+DEFAULT_TARGET = Path(__file__).resolve().parent / "models" / FILENAME
 
-print("Downloading Florence-2 (Vision) - This is ~1GB...")
-# This will be cached by transformers automatically, 
-# but we can pre-fetch it to ensure it works.
-from transformers import AutoModelForCausalLM, AutoProcessor
-AutoModelForCausalLM.from_pretrained("microsoft/Florence-2-large", trust_remote_code=True)
-AutoProcessor.from_pretrained("microsoft/Florence-2-large", trust_remote_code=True)
-print("Florence-2 Downloaded!")
+
+def main() -> None:
+    target = Path(os.environ.get("EDUSYNC_MODEL_PATH", DEFAULT_TARGET)).expanduser().resolve()
+    target.parent.mkdir(parents=True, exist_ok=True)
+    local_cache = Path(__file__).resolve().parent.parent / ".cache" / "huggingface"
+    local_cache.mkdir(parents=True, exist_ok=True)
+    os.environ.setdefault("HF_HOME", str(local_cache))
+    os.environ.setdefault("HF_HUB_DISABLE_XET", "1")
+    from huggingface_hub import hf_hub_download
+
+    print(f"Downloading {FILENAME} (~5 GB) to {target.parent}")
+    downloaded = Path(
+        hf_hub_download(
+            repo_id=REPO_ID,
+            filename=FILENAME,
+            local_dir=target.parent,
+            cache_dir=local_cache,
+        )
+    ).resolve()
+    if downloaded != target:
+        shutil.move(str(downloaded), str(target))
+    print(f"Model ready: {target}")
+
+
+if __name__ == "__main__":
+    main()

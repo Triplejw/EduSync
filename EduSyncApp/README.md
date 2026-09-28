@@ -12,23 +12,20 @@ Expo/React Native frontend for the EduSync research testbed. This app serves as 
 
 ### 1. Configure the Backend IP
 
-Edit `BACKEND_IP` in `lib/config.ts`, or use the env var override:
+Supply the backend URL when Expo starts. The app deliberately has no hard-coded LAN address:
 
 ```bash
 # Find your LAN IP (from the project root):
 ./find_backend_ip.sh
 
-# Option A: env var (no code change)
 EXPO_PUBLIC_API_URL=http://<YOUR_IP>:8000 npx expo start
-
-# Option B: edit lib/config.ts directly
 ```
 
 ### 2. Start the Backend
 
 ```bash
-cd backend && python main.py
-# Binds to http://0.0.0.0:8000 (all LAN interfaces)
+cd backend
+uvicorn main:app --host 0.0.0.0 --port 8000
 ```
 
 ### 3. Install Dependencies and Start

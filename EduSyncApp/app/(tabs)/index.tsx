@@ -18,8 +18,7 @@ import { getAuthErrorMessage } from '@/lib/authErrors';
 /** Group materials by classroom_id for class-card layout. Keys: classroom id (number) or 'unassigned' (null). */
 function groupMaterialsByClassroom(materials: any[]): Map<number | 'unassigned', any[]> {
   const map = new Map<number | 'unassigned', any[]>();
-  const list = Array.isArray(materials) ? materials : (materials?.items ?? []);
-  for (const m of list) {
+  for (const m of materials) {
     const key = m.classroom_id == null ? 'unassigned' : m.classroom_id;
     if (!map.has(key)) map.set(key, []);
     map.get(key)!.push(m);
@@ -37,7 +36,7 @@ export default function MaterialsScreen() {
   const [uploading, setUploading] = useState(false);
   const [status, setStatus] = useState('');
   const [elapsedTime, setElapsedTime] = useState(0);
-  const timerRef = useRef<NodeJS.Timeout | null>(null);
+  const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const loadData = useCallback(async () => {
     try {

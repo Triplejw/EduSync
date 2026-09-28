@@ -1,5 +1,8 @@
 # Ignore Python Virtual Env
 venv/
+.venv/
+.tools/
+.cache/
 __pycache__/
 *.pyc
 
@@ -7,9 +10,8 @@ __pycache__/
 node_modules/
 .expo/
 
-# Ignore Large AI Models (Download them fresh if needed)
-backend/models/*.gguf
-backend/models/*.bin
+# Ignore downloaded model weights and OCR caches
+backend/models/
 
 # Ignore Database (Local only)
 *.db
@@ -23,6 +25,9 @@ backend/uploads/
 
 # Ignore environment/config with secrets
 backend/config.py
+.env
+backend/.env
+EduSyncApp/.env
 
 # Ignore Claude Code memory
 .claude/
